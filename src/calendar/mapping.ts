@@ -1,6 +1,7 @@
 // Чистые функции: запись трекера ↔ событие Google Календаря (SPEC §10).
 import type { Entry, TrackerDoc } from '../model/types';
 import { formatEUR } from '../model/entry';
+import type { DesiredEvent, ForeignEvent, MovedEvent } from '../sync/scriptApi';
 
 /** Часовой пояс устройства: в нём выгружаются события со временем и создаётся календарь. */
 export const CALENDAR_TIME_ZONE: string = (() => {
@@ -399,6 +400,92 @@ export function eventToEntryPatch(event: GCalEvent, entry: Entry): Partial<Entry
   // allDay держим согласованным, даже если поменялось только время
   if (patch.allDay === undefined && entry.allDay !== t.allDay) patch.allDay = t.allDay;
   return patch;
+}
+
+// ---------- обмен с Apps Script (src/sync/scriptApi.ts) ----------
+
+/** 'YYYY-MM-DD' или 'YYYY-MM-DDTHH:mm' из даты события Google. */
+function gcalToScript(dt: GCalDateTime | undefined): string | undefined {
+  if (!dt) return undefined;
+  if (dt.date) return dt.date;
+  return dt.dateTime?.slice(0, 16);
+}
+
+function scriptToGcal(s: string, allDay: boolean): GCalDateTime {
+  return allDay ? { date: s.slice(0, 10) } : { dateTime: s.slice(0, 16) + ':00', timeZone: CALENDAR_TIME_ZONE };
+}
+
+/** Событие, которое должно быть в календаре, или null — «события быть не должно». */
+export function entryToDesired(entry: Entry, doc: TrackerDoc): DesiredEvent | null {
+  const ev = entryToEvent(entry, doc);
+  if (!ev) return null;
+  const start = gcalToScript(ev.start);
+  const end = gcalToScript(ev.end);
+  if (!start || !end) return null;
+  const d: DesiredEvent = {
+    entryId: entry.id,
+    hash: eventHash(ev)!,
+    title: ev.summary ?? '',
+    allDay: !!ev.start?.date,
+    start,
+    end,
+    reminders: (ev.reminders?.overrides ?? []).map((r) => r.minutes),
+  };
+  if (ev.description) d.description = ev.description;
+  if (ev.location) d.location = ev.location;
+  if (ev.colorId) d.colorId = ev.colorId;
+  return d;
+}
+
+/** Перенос события в календаре → патч даты/времени записи (null — менять нечего). */
+export function movedToPatch(m: MovedEvent, entry: Entry): Partial<Entry> | null {
+  return eventToEntryPatch({ start: scriptToGcal(m.start, m.allDay), end: scriptToGcal(m.end, m.allDay) }, entry);
+}
+
+/** Поля предложения импорта из чужого события календаря. */
+export function foreignToFields(f: ForeignEvent): {
+  date: string;
+  dateEnd?: string;
+  timeStart?: string;
+  timeEnd?: string;
+} {
+  const date = f.start.slice(0, 10);
+  if (f.allDay) {
+    const last = addDays(f.end.slice(0, 10), -1);
+    return last > date ? { date, dateEnd: last } : { date };
+  }
+  const timeStart = f.start.slice(11, 16);
+  const endDate = f.end.slice(0, 10);
+  const timeEnd = f.end.slice(11, 16) || undefined;
+  const diff = daysBetween(date, endDate);
+  const overnight = diff === 1 && timeEnd !== undefined && toMinutes(timeEnd) <= toMinutes(timeStart);
+  const out: { date: string; dateEnd?: string; timeStart?: string; timeEnd?: string } = { date, timeStart, timeEnd };
+  if (diff >= 1 && !overnight) out.dateEnd = endDate;
+  return out;
+}
+
+/** Сегодняшняя дата в поясе календаря. */
+export function todayInCalendarZone(now: Date = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: CALENDAR_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(now);
+  const g = (t: string) => parts.find((p) => p.type === t)?.value ?? '00';
+  return `${g('year')}-${g('month')}-${g('day')}`;
+}
+
+/** Окно поиска перенесённых и чужих событий: от сегодня −60 дней до +2 лет. */
+export function calendarWindow(now: Date = new Date()): { windowStart: string; windowEnd: string } {
+  const today = todayInCalendarZone(now);
+  return { windowStart: addDays(today, -60), windowEnd: addDays(today, 730) };
+}
+
+/** Событие заканчивается не раньше начала окна (прошлое старше окна не выгружаем и не сверяем). */
+export function desiredInWindow(d: DesiredEvent, windowStart: string): boolean {
+  const endDay = d.end.slice(0, 10);
+  return d.allDay ? endDay > windowStart : endDay >= windowStart;
 }
 
 /** Данные для предложения импорта из события, созданного не приложением. */

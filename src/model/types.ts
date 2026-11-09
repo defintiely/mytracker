@@ -143,7 +143,7 @@ export interface Settings {
   updatedAt: ISODateTime;
 }
 
-/** Канонический документ — то, что лежит в Drive appDataFolder/tracker.json. */
+/** Канонический документ — то, что лежит в Drive пользователя: «Трекер/tracker.json» (пишет Apps Script). */
 export interface TrackerDoc {
   schemaVersion: 1;
   entries: Entry[];

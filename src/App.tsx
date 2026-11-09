@@ -87,7 +87,7 @@ export function App({ storageError }: { storageError?: string }) {
               <QuickAdd />
             </div>
             <div className="topbar-right">
-              <SyncIndicator compact={mobile} />
+              <SyncIndicator compact={mobile} onConnect={() => setTab('settings')} />
               <button type="button" className="primary new-btn" onClick={() => ui.createEntry()} aria-label="Новая запись">
                 {mobile ? '+' : '+ Запись'}
               </button>

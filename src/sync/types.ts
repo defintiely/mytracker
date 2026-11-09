@@ -1,11 +1,12 @@
-// Контракт модулей синхронизации (Drive) и авторизации Google.
+// Контракт модулей синхронизации (Drive через Google Apps Script, см. scriptApi.ts).
+// 'needs-auth' — наследие входа через OAuth: больше не выставляется, оставлено для совместимости типов.
 export type SyncStatus = 'disabled' | 'needs-auth' | 'offline' | 'syncing' | 'synced' | 'dirty' | 'error';
 
 export interface SyncState {
   status: SyncStatus;
   lastSyncAt?: string;
   error?: string;
-  /** Email вошедшего пользователя, если известен. */
+  /** Email владельца скрипта (из ping), если известен. */
   account?: string;
 }
 
@@ -19,11 +20,5 @@ export interface Conflict {
   keptValue: unknown;
 }
 
-export const GOOGLE_SCOPES = [
-  'https://www.googleapis.com/auth/drive.appdata',
-  'https://www.googleapis.com/auth/drive.file',
-  'https://www.googleapis.com/auth/calendar.app.created',
-];
-
-/** Задача, которую синхронизатор запускает после успешной синхронизации Drive (календарь). */
-export type AfterSyncHook = (getToken: () => Promise<string>) => Promise<void>;
+/** Задача, которую синхронизатор запускает после успешной синхронизации (календарь). */
+export type AfterSyncHook = (client: import('./scriptApi').ScriptClient) => Promise<void>;

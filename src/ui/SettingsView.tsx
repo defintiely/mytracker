@@ -1,13 +1,27 @@
-// Экран «Настройки»: Google, календарь, общие параметры, цвета, категории, справочники, импорт и экспорт.
-import { useEffect, useState } from 'react';
+// Экран «Настройки»: Google Drive (через Apps Script), календарь, общие параметры, цвета, категории, справочники, импорт и экспорт.
+import { useEffect, useState, type ReactNode } from 'react';
 import type { Contact, EntryType, Settings, Source } from '../model/types';
 import { TYPE_LABELS } from '../model/types';
 import { nowIso } from '../model/entry';
 import { store } from '../store/store';
 import { useTracker } from '../store/useTracker';
-import { auth, getClientId } from '../sync/auth';
+import { OfflineError, ScriptCallError } from '../sync/errors';
+import type { PingResponse, ScriptConnection } from '../sync/scriptApi';
+import {
+  callScript,
+  clearConnection,
+  connectionLink,
+  generateKey,
+  getConnection,
+  getPendingKey,
+  onConnectionChange,
+  parseConnectionLink,
+  setConnection,
+  setPendingKey,
+} from '../sync/scriptClient';
+import { buildScriptSource } from '../sync/scriptSource';
 import { syncEngine } from '../sync/syncEngine';
-import type { Conflict } from '../sync/types';
+import type { Conflict, SyncState } from '../sync/types';
 import { CommitInput, parseAmount } from './common';
 import { useSyncState } from './SyncIndicator';
 import { ImportWizard } from './ImportWizard';
@@ -93,96 +107,270 @@ export function SettingsView() {
   );
 }
 
-/** Пошаговая инструкция: как получить OAuth Client ID в Google Cloud. Раскрыта, пока ID не задан. */
-function GoogleSetupGuide({ open }: { open: boolean }) {
-  const origin = typeof window !== 'undefined' ? window.location.origin : '';
-  const [copied, setCopied] = useState(false);
+/** Кнопка «скопировать в буфер» с подтверждением. text() может бросить — тогда «не получилось». */
+function CopyButton({
+  text,
+  label,
+  className,
+  onFail,
+}: {
+  text: () => string;
+  label: string;
+  className?: string;
+  onFail?: () => void;
+}) {
+  const [state, setState] = useState<'idle' | 'ok' | 'fail'>('idle');
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(origin);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      await navigator.clipboard.writeText(text());
+      setState('ok');
     } catch {
-      /* буфер недоступен — адрес виден и так */
+      setState('fail');
+      onFail?.();
+    }
+    setTimeout(() => setState('idle'), 2500);
+  };
+  return (
+    <button type="button" className={className} onClick={copy}>
+      {state === 'ok' ? 'Скопировано ✓' : state === 'fail' ? 'Не получилось — скопируйте вручную ниже' : label}
+    </button>
+  );
+}
+
+function safeScriptSource(key: string): string {
+  try {
+    return buildScriptSource(key);
+  } catch (e) {
+    return '// ' + errorText(e);
+  }
+}
+
+/** Кнопка «Скопировать код скрипта» + код в поле (на случай, если буфер обмена недоступен). */
+function ScriptCodeBlock({ scriptKey, extra }: { scriptKey: string; extra?: ReactNode }) {
+  const [show, setShow] = useState(false);
+  return (
+    <div className="script-code">
+      <div className="row gap wrap">
+        <CopyButton className="primary" label="Скопировать код скрипта" text={() => buildScriptSource(scriptKey)} onFail={() => setShow(true)} />
+        {extra}
+        <button type="button" className="link-btn" onClick={() => setShow((v) => !v)}>
+          {show ? 'Скрыть код' : 'Показать код'}
+        </button>
+      </div>
+      {show && (
+        <textarea
+          className="script-code-text"
+          readOnly
+          rows={8}
+          value={safeScriptSource(scriptKey)}
+          onFocus={(e) => e.currentTarget.select()}
+          aria-label="Код скрипта"
+        />
+      )}
+    </div>
+  );
+}
+
+function connectErrorText(e: unknown, hadKeyInLink: boolean): string {
+  if (e instanceof OfflineError) {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return 'Нет интернета — подключитесь к сети и попробуйте снова.';
+    return (
+      'Скрипт не ответил. Проверьте: при развёртывании выбрано «У кого есть доступ: Все», и скопирован именно ' +
+      '«URL веб-приложения» (оканчивается на /exec). Если всё так — создайте новое развёртывание и вставьте новую ссылку.'
+    );
+  }
+  if (e instanceof ScriptCallError && e.code === 'forbidden' && !hadKeyInLink) {
+    return (
+      'Ключ не совпал: в скрипте другой код. Скопируйте код скрипта (шаг 1) ещё раз, замените им код в редакторе, ' +
+      'сохраните и обновите развёртывание. Если трекер уже подключён на другом устройстве — вставьте сюда ссылку оттуда.'
+    );
+  }
+  return errorText(e);
+}
+
+/** Пошаговое подключение: скрипт → развёртывание → ссылка. Показывается, пока не подключено. */
+function ScriptSetup() {
+  const [key, setKey] = useState(() => getPendingKey());
+  const newKey = () => {
+    if (!window.confirm('Создать новый ключ? Код скрипта изменится: старый скрипт с новым ключом работать не будет.')) return;
+    const k = generateKey();
+    setPendingKey(k);
+    setKey(k);
+  };
+  const [link, setLink] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string>();
+
+  const connect = async () => {
+    setMsg(undefined);
+    const text = link.trim();
+    const parsed = parseConnectionLink(text);
+    if (!parsed) {
+      setMsg(
+        /\/dev\b/.test(text)
+          ? 'Это тестовая ссылка (оканчивается на /dev) — она работает только в вашем браузере. Нужен «URL веб-приложения» из окна развёртывания, он оканчивается на /exec.'
+          : 'Это не похоже на ссылку веб-приложения. Она начинается с https://script.google.com/macros/s/ и оканчивается на /exec.',
+      );
+      return;
+    }
+    const conn = { url: parsed.url, key: parsed.key ?? key };
+    setBusy(true);
+    try {
+      await callScript<PingResponse>(conn, { action: 'ping' });
+      setConnection(conn.url, conn.key);
+      void syncEngine.syncNow();
+    } catch (e) {
+      setMsg(connectErrorText(e, !!parsed.key));
+      setBusy(false);
     }
   };
-  const link = (href: string, text: string) => (
-    <a href={href} target="_blank" rel="noreferrer">
-      {text}
-    </a>
-  );
+
   return (
-    <details className="setup-guide" open={open}>
-      <summary>Как подключить Google — пошагово (≈10 минут, один раз)</summary>
-      <ol>
+    <div className="script-setup">
+      <p>
+        Подключение делается один раз и занимает около 5 минут. Никаких настроек для разработчиков: вы просто создаёте
+        маленький скрипт в своём Google-аккаунте, и он хранит данные трекера в вашем Google Drive.
+      </p>
+      <ol className="script-steps">
         <li>
-          Откройте {link('https://console.cloud.google.com/projectcreate', 'Google Cloud Console')} под своим Google-аккаунтом и
-          создайте проект с любым именем, например «Трекер». Платить ничего не нужно.
+          <b>Скопируйте код скрипта</b> и откройте редактор скриптов Google — под тем аккаунтом, где хотите хранить данные.
+          <ScriptCodeBlock
+            scriptKey={key}
+            extra={
+              <a className="btn" href="https://script.google.com/create" target="_blank" rel="noreferrer">
+                Открыть script.google.com
+              </a>
+            }
+          />
         </li>
         <li>
-          Включите в этом проекте два API — кнопка «Enable» на каждой странице:{' '}
-          {link('https://console.cloud.google.com/apis/library/drive.googleapis.com', 'Google Drive API')} и{' '}
-          {link('https://console.cloud.google.com/apis/library/calendar-json.googleapis.com', 'Google Calendar API')}.
+          В редакторе удалите всё, что там написано, вставьте скопированный код и нажмите 💾 <b>Сохранить</b>.
         </li>
         <li>
-          Откройте {link('https://console.cloud.google.com/auth/overview', 'Google Auth Platform')} → «Get started»: имя
-          приложения (любое), ваш email, тип аудитории <b>External</b>. Затем в разделе{' '}
-          {link('https://console.cloud.google.com/auth/audience', 'Audience')} оставьте статус <b>Testing</b> и в «Test users»
-          добавьте свой Gmail.
+          Справа вверху нажмите <b>«Развернуть» → «Новое развёртывание»</b> → шестерёнка рядом с «Выберите тип» →{' '}
+          <b>«Веб-приложение»</b>. Выполнять от имени: <b>Я</b>. У кого есть доступ: <b>Все</b>. Нажмите «Развернуть».
         </li>
         <li>
-          В разделе {link('https://console.cloud.google.com/auth/clients', 'Clients')} нажмите «Create client»: тип{' '}
-          <b>Web application</b>, в «Authorized JavaScript origins» добавьте адрес этого сайта:
-          <div className="row gap wrap setup-origin">
-            <code>{origin}</code>
-            <button type="button" className="small" onClick={copy}>
-              {copied ? 'Скопировано' : 'Копировать'}
-            </button>
+          Google попросит разрешение: <b>«Предоставить доступ»</b> → выберите свой аккаунт → <b>«Дополнительные настройки»</b> →{' '}
+          <b>«Перейти на страницу … (небезопасно)»</b> → <b>«Разрешить»</b>. Это ваш собственный скрипт — предупреждение
+          стандартное.
+        </li>
+        <li>
+          Скопируйте <b>«URL веб-приложения»</b> (оканчивается на <code>/exec</code>), вставьте его сюда и нажмите «Подключить».
+          <div className="field">
+            <label htmlFor="st-script-url">Ссылка веб-приложения</label>
+            <div className="row gap">
+              <input
+                id="st-script-url"
+                value={link}
+                placeholder="https://script.google.com/macros/s/…/exec"
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(e) => setLink(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && !busy && link.trim() && void connect()}
+              />
+              <button type="button" className="primary" disabled={busy || !link.trim()} onClick={() => void connect()}>
+                {busy ? 'Проверяю…' : 'Подключить'}
+              </button>
+            </div>
           </div>
-          «Authorized redirect URIs» оставьте пустым. Нажмите «Create».
-        </li>
-        <li>
-          Скопируйте <b>Client ID</b> (оканчивается на <code>.apps.googleusercontent.com</code>), вставьте в поле ниже, нажмите
-          «Сохранить», затем «Войти».
-        </li>
-        <li>
-          Google покажет «Google hasn’t verified this app» — это нормально для личного приложения: «Advanced» →
-          «Go to … (unsafe)». На экране доступа отметьте <b>все</b> галочки (Drive и Календарь).
         </li>
       </ol>
+      {msg && <div className="hint warn">{msg}</div>}
       <div className="hint">
-        Client ID хранится на этом устройстве — на телефоне вставьте его ещё раз. Чтобы не вводить на каждом устройстве, его
-        можно один раз записать в переменную репозитория <code>VITE_GOOGLE_CLIENT_ID</code> (GitHub → Settings → Secrets and
-        variables → Actions → Variables) — он попадёт в следующую сборку. Client ID не секретный.
+        «У кого есть доступ: Все» значит, что скрипт отвечает без входа в Google. Но без ключа, который вшит в код скрипта, он
+        ничего не отдаёт и ничего не меняет. Не публикуйте код скрипта и не пересылайте его посторонним.
       </div>
-    </details>
+      <div className="hint">
+        Уже подключали трекер на другом устройстве? Шаги 1–4 не нужны: на том устройстве в «Настройках» скопируйте «Ссылку для
+        телефона и других устройств» и вставьте её в поле шага 5.
+      </div>
+      <div className="hint">
+        Создаёте скрипт заново, потому что ключ мог попасть к посторонним?{' '}
+        <button type="button" className="link-btn" onClick={newKey}>
+          Создать новый ключ
+        </button>{' '}
+        — и затем пройдите шаги 1–5 с новым кодом.
+      </div>
+    </div>
+  );
+}
+
+/** Подключено: статус, синхронизация, ссылка для второго устройства, отключение, код скрипта. */
+function ScriptConnected({ conn, sync }: { conn: ScriptConnection; sync: SyncState }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string>();
+  const link = connectionLink(conn);
+  const syncNow = async () => {
+    setBusy(true);
+    setMsg(undefined);
+    try {
+      await syncEngine.syncNow();
+    } catch (e) {
+      setMsg(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const disconnect = () => {
+    if (!window.confirm('Отключить синхронизацию на этом устройстве? Данные на устройстве и в Google Drive останутся.')) return;
+    setPendingKey(conn.key); // чтобы потом подключиться к тому же скрипту одной ссылкой
+    clearConnection();
+  };
+  return (
+    <div className="script-connected">
+      <div className="row gap wrap">
+        <span>
+          <b>Подключено</b>
+          {sync.account ? `: ${sync.account}` : ''}
+          {sync.lastSyncAt ? ` · синхронизировано ${new Date(sync.lastSyncAt).toLocaleString('ru-RU')}` : ''}
+        </span>
+        <button type="button" className="primary" disabled={busy || sync.status === 'syncing'} onClick={() => void syncNow()}>
+          {sync.status === 'syncing' ? 'Синхронизация…' : 'Синхронизировать'}
+        </button>
+        <button type="button" onClick={disconnect}>
+          Отключить
+        </button>
+      </div>
+      {sync.status === 'offline' && <div className="hint">Нет связи со скриптом — синхронизация продолжится, когда появится сеть.</div>}
+      {sync.error && <div className="hint warn">{sync.error}</div>}
+      {msg && <div className="hint warn">{msg}</div>}
+      <div className="field">
+        <label htmlFor="st-conn-link">Ссылка для телефона и других устройств</label>
+        <div className="row gap">
+          <input id="st-conn-link" readOnly value={link} onFocus={(e) => e.currentTarget.select()} />
+          <CopyButton label="Копировать" text={() => link} />
+        </div>
+        <div className="hint">
+          На втором устройстве откройте трекер → «Настройки» → вставьте эту ссылку в поле «Ссылка веб-приложения» → «Подключить».
+          На script.google.com ничего делать не нужно. В ссылке есть ключ к вашим данным — не пересылайте её посторонним.
+        </div>
+      </div>
+      <details className="setup-guide">
+        <summary>Показать код скрипта ещё раз</summary>
+        <p className="hint">Нужно, только если трекер попросил обновить скрипт. Ключ в коде тот же, ссылка не изменится.</p>
+        <ScriptCodeBlock scriptKey={conn.key} />
+        <ol>
+          <li>Откройте свой скрипт на script.google.com, удалите старый код, вставьте новый и нажмите 💾 «Сохранить».</li>
+          <li>
+            «Развернуть» → «Управление развёртываниями» → карандаш → «Версия: Новая версия» → «Развернуть».
+          </li>
+        </ol>
+      </details>
+    </div>
   );
 }
 
 function GoogleSection() {
   const sync = useSyncState();
-  const [clientId, setClientId] = useState(() => getClientId() ?? '');
-  const [msg, setMsg] = useState<string>();
+  const [conn, setConn] = useState<ScriptConnection | undefined>(() => getConnection());
   const [conflicts, setConflicts] = useState<Conflict[] | null>(null);
-  const [, force] = useState(0);
-  const safe = <T,>(fn: () => T, fallback: T): T => {
-    try {
-      return fn();
-    } catch {
-      return fallback;
-    }
-  };
-  const configured = safe(() => auth.configured(), false);
-  const signedIn = safe(() => auth.isSignedIn(), false);
-  const run = async (fn: () => Promise<void> | void) => {
-    setMsg(undefined);
-    try {
-      await fn();
-    } catch (e) {
-      setMsg(errorText(e));
-    }
-    force((x) => x + 1);
-  };
+  useEffect(() => {
+    const off = onConnectionChange(() => setConn(getConnection()));
+    return () => {
+      off();
+    };
+  }, []);
   useEffect(() => {
     let alive = true;
     syncEngine
@@ -195,66 +383,13 @@ function GoogleSection() {
   }, [sync.lastSyncAt]);
 
   return (
-    <section className="settings-block">
-      <h2>Google Drive</h2>
+    <section className="settings-block" id="settings-google">
+      <h2>Google Drive через Apps Script</h2>
       <div className="hint">
-        Данные синхронизируются через ваш Google Drive (скрытая папка приложения). Своего сервера нет.
+        Данные синхронизируются через ваш Google Drive: файл лежит в папке «Трекер», там же — ежедневные резервные копии.
+        Своего сервера у трекера нет.
       </div>
-      <GoogleSetupGuide open={!configured} />
-      <div className="field">
-        <label htmlFor="st-cid">OAuth Client ID</label>
-        <div className="row gap">
-          <input
-            id="st-cid"
-            value={clientId}
-            placeholder={configured ? 'настроен (введите новый, чтобы заменить)' : 'xxxx.apps.googleusercontent.com'}
-            onChange={(e) => setClientId(e.target.value)}
-          />
-          <button
-            type="button"
-            disabled={!clientId.trim()}
-            onClick={() =>
-              run(() => {
-                auth.setClientId(clientId.trim());
-                setClientId('');
-              })
-            }
-          >
-            Сохранить
-          </button>
-        </div>
-      </div>
-      <div className="row gap wrap">
-        <span>
-          Статус: <b>{signedIn ? 'вход выполнен' : configured ? 'не выполнен вход' : 'Client ID не задан'}</b>
-          {sync.account ? ` · ${sync.account}` : ''}
-          {sync.lastSyncAt ? ` · синхронизировано ${new Date(sync.lastSyncAt).toLocaleString('ru-RU')}` : ''}
-        </span>
-        {signedIn ? (
-          <button type="button" onClick={() => run(() => auth.signOut())}>
-            Выйти
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="primary"
-            disabled={!configured}
-            onClick={() =>
-              run(async () => {
-                await auth.signIn();
-                await syncEngine.syncNow();
-              })
-            }
-          >
-            Войти
-          </button>
-        )}
-        <button type="button" onClick={() => run(() => syncEngine.syncNow())}>
-          Синхронизировать сейчас
-        </button>
-      </div>
-      {sync.status === 'error' && sync.error && <div className="hint warn">{sync.error}</div>}
-      {msg && <div className="hint warn">{msg}</div>}
+      {conn ? <ScriptConnected conn={conn} sync={sync} /> : <ScriptSetup />}
       <details>
         <summary>Журнал конфликтов {conflicts ? `(${conflicts.length})` : ''}</summary>
         {!conflicts || conflicts.length === 0 ? (

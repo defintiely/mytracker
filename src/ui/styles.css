@@ -1611,3 +1611,43 @@ details > summary {
 .setup-origin code {
   word-break: break-all;
 }
+
+/* Подключение Google Drive через Apps Script (настройки) */
+.script-steps {
+  margin: 10px 0;
+  padding-left: 22px;
+  line-height: 1.5;
+}
+.script-steps > li + li {
+  margin-top: 10px;
+}
+.script-code {
+  margin: 6px 0;
+}
+.script-code button,
+.script-code .btn {
+  white-space: normal;
+  text-align: center;
+}
+.script-code-text {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre;
+  overflow: auto;
+}
+.link-btn {
+  border-color: transparent;
+  background: transparent;
+  color: var(--accent);
+  text-decoration: underline;
+}
+.script-connected .field {
+  margin-top: 12px;
+}
+.script-connected input[readonly] {
+  flex: 1;
+  min-width: 0;
+}

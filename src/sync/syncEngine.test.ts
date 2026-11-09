@@ -4,70 +4,69 @@ import { describe, expect, it } from 'vitest';
 import { TrackerStore } from '../store/store';
 import { newEntry } from '../model/entry';
 import type { TrackerDoc } from '../model/types';
-import { NeedsAuthError } from './auth';
-import type { DriveApi, RemoteFile } from './drive';
-import { OfflineError } from './errors';
+import { OfflineError, ScriptCallError } from './errors';
 import { deepEqual, stableStringify } from './merge';
+import type { ScriptClient } from './scriptApi';
 import { createSyncEngine, META_BASE, type SyncEngineDeps } from './syncEngine';
 import type { SyncState } from './types';
 
-/** Общий «Drive» в памяти: хранит JSON-строку и номер версии, как настоящий. */
-class FakeDrive {
-  file?: { id: string; content: string; version: number };
-  backups = new Map<string, string>();
+/** Скрипт в памяти: хранит JSON-строку и ревизию, save с чужой ревизией → conflict (как настоящий). */
+class FakeScript {
+  content?: string;
+  rev = 0;
   writes = 0;
+  loads = 0;
+  pings = 0;
   offline = false;
-  unauthorized = false;
-  /** Вызывается между скачиванием и проверкой версии — имитация записи другим устройством. */
-  beforeVersionCheck?: () => void;
+  forbidden = false;
+  protocol = 1;
+  /** Вызывается между load и save — имитация записи другим устройством. */
+  beforeSave?: () => void | Promise<void>;
 
   private guard() {
     if (this.offline) throw new OfflineError();
-    if (this.unauthorized) throw new NeedsAuthError();
+    if (this.forbidden) throw new ScriptCallError('forbidden', 'Неверный ключ');
   }
 
-  client(): DriveApi {
+  client(): ScriptClient {
     const self = this;
     return {
-      async findDataFile(): Promise<RemoteFile | undefined> {
+      configured: () => true,
+      async ping() {
         self.guard();
-        return self.file ? { id: self.file.id, version: String(self.file.version) } : undefined;
+        self.pings++;
+        return { ok: true, protocol: self.protocol, email: 'me@example.com' };
       },
-      async download(id) {
+      async load() {
         self.guard();
-        if (!self.file || self.file.id !== id) throw new Error('404');
-        return { doc: JSON.parse(self.file.content) as TrackerDoc, version: String(self.file.version) };
+        self.loads++;
+        return { ok: true, doc: self.content ? (JSON.parse(self.content) as TrackerDoc) : null, rev: self.rev };
       },
-      async getVersion() {
+      async save(doc, baseRev) {
         self.guard();
-        const hook = self.beforeVersionCheck;
-        self.beforeVersionCheck = undefined;
-        hook?.();
-        return String(self.file!.version);
-      },
-      async createDataFile(doc) {
-        self.guard();
-        self.file = { id: 'f1', content: JSON.stringify(doc), version: 1 };
+        const hook = self.beforeSave;
+        self.beforeSave = undefined;
+        await hook?.();
+        if (baseRev !== self.rev) return { ok: false, code: 'conflict', error: 'conflict', rev: self.rev };
+        self.content = JSON.stringify(doc);
+        self.rev++;
         self.writes++;
-        return { id: 'f1', version: '1' };
+        return { ok: true, rev: self.rev };
       },
-      async updateDataFile(id, doc) {
-        self.guard();
-        self.file = { id, content: JSON.stringify(doc), version: self.file!.version + 1 };
-        self.writes++;
-        return { id, version: String(self.file.version) };
-      },
-      async getAccountEmail() {
-        return 'me@example.com';
-      },
-      async writeDailyBackup(doc, date) {
-        self.backups.set(date, JSON.stringify(doc));
+      async calendar() {
+        throw new Error('не используется');
       },
     };
   }
 
   remoteDoc(): TrackerDoc {
-    return JSON.parse(this.file!.content) as TrackerDoc;
+    return JSON.parse(this.content!) as TrackerDoc;
+  }
+
+  /** Запись «другим устройством» в обход движка. */
+  writeExternal(doc: TrackerDoc) {
+    this.content = JSON.stringify(doc);
+    this.rev++;
   }
 }
 
@@ -79,11 +78,11 @@ async function newDevice(): Promise<TrackerStore> {
   return s;
 }
 
-function engineFor(store: TrackerStore, drive: FakeDrive, extra: Partial<SyncEngineDeps> = {}) {
+function engineFor(store: TrackerStore, script: FakeScript, extra: Partial<SyncEngineDeps> = {}) {
   return createSyncEngine({
     store,
-    auth: { configured: () => true, isSignedIn: () => true, getToken: async () => 'token' },
-    drive: drive.client(),
+    client: script.client(),
+    connectionUrl: () => 'https://script.google.com/macros/s/x/exec',
     isOnline: () => true,
     env: {},
     ...extra,
@@ -94,13 +93,13 @@ function same(a: TrackerDoc, b: TrackerDoc): boolean {
   return stableStringify(a) === stableStringify(b);
 }
 
-describe('syncEngine: два устройства через один Drive', () => {
+describe('syncEngine: два устройства через один скрипт', () => {
   it('сходятся к одинаковому документу', async () => {
-    const drive = new FakeDrive();
+    const script = new FakeScript();
     const A = await newDevice();
     const B = await newDevice();
-    const ea = engineFor(A, drive);
-    const eb = engineFor(B, drive);
+    const ea = engineFor(A, script);
+    const eb = engineFor(B, script);
 
     // A создаёт записи и первым синхронизируется — создаётся tracker.json.
     const shoot = newEntry({ title: 'Свадьба', amount: 500 });
@@ -110,15 +109,15 @@ describe('syncEngine: два устройства через один Drive', ()
     await ea.syncNow();
     expect(ea.getState().status).toBe('synced');
     expect(A.isDirty()).toBe(false);
-    expect(drive.remoteDoc().entries).toHaveLength(2);
-    expect(drive.backups.size).toBe(1);
+    expect(script.remoteDoc().entries).toHaveLength(2);
+    expect(script.rev).toBe(1);
     expect(ea.getState().account).toBe('me@example.com');
 
     // B — первая синхронизация, у него своя запись.
     B.upsertEntry(newEntry({ title: 'Зубной', type: 'personal' }));
     await eb.syncNow();
     expect(B.getDoc().entries).toHaveLength(3);
-    expect(drive.remoteDoc().entries).toHaveLength(3);
+    expect(script.remoteDoc().entries).toHaveLength(3);
 
     // Параллельные правки разных полей одной записи.
     A.updateEntry(shoot.id, { location: 'Порт' });
@@ -129,7 +128,7 @@ describe('syncEngine: два устройства через один Drive', ()
     await eb.syncNow();
 
     expect(same(A.getDoc(), B.getDoc())).toBe(true);
-    expect(same(A.getDoc(), drive.remoteDoc())).toBe(true);
+    expect(same(A.getDoc(), script.remoteDoc())).toBe(true);
     const merged = A.getDoc().entries.find((e) => e.id === shoot.id)!;
     expect(merged.location).toBe('Порт');
     expect(merged.status).toBe('shot');
@@ -155,211 +154,185 @@ describe('syncEngine: два устройства через один Drive', ()
     expect(same(A.getDoc(), B.getDoc())).toBe(true);
 
     // Base сохранён и равен документу в Drive.
-    expect(deepEqual(await A.getMeta<TrackerDoc>(META_BASE), drive.remoteDoc())).toBe(true);
+    expect(deepEqual(await A.getMeta<TrackerDoc>(META_BASE), script.remoteDoc())).toBe(true);
   });
 
-  it('без изменений файл в Drive не перезаписывается', async () => {
-    const drive = new FakeDrive();
+  it('без изменений файл не перезаписывается; email запрашивается один раз', async () => {
+    const script = new FakeScript();
     const A = await newDevice();
-    const ea = engineFor(A, drive);
+    const ea = engineFor(A, script);
     A.upsertEntry(newEntry({ title: 'x' }));
     await ea.syncNow();
-    const writes = drive.writes;
+    const writes = script.writes;
     await ea.syncNow();
     await ea.syncNow();
-    expect(drive.writes).toBe(writes);
+    expect(script.writes).toBe(writes);
+    expect(script.pings).toBe(1);
+
+    // Новый движок на том же устройстве берёт email из кеша.
+    const again = engineFor(A, script);
+    await again.syncNow();
+    expect(again.getState().account).toBe('me@example.com');
+    expect(script.pings).toBe(1);
   });
 
-  it('файл изменился между чтением и записью — цикл повторяется и ничего не теряется', async () => {
-    const drive = new FakeDrive();
+  it('пустой документ: файла нет — он создаётся', async () => {
+    const script = new FakeScript();
+    const A = await newDevice();
+    await engineFor(A, script).syncNow();
+    expect(script.rev).toBe(1);
+    expect(script.remoteDoc().entries).toEqual([]);
+  });
+
+  it('conflict: файл изменился между load и save — цикл повторяется и ничего не теряется', async () => {
+    const script = new FakeScript();
     const A = await newDevice();
     const B = await newDevice();
-    const ea = engineFor(A, drive);
-    const eb = engineFor(B, drive);
+    const ea = engineFor(A, script);
+    const eb = engineFor(B, script);
     await ea.syncNow();
     await eb.syncNow();
 
     A.upsertEntry(newEntry({ title: 'от A' }));
     B.upsertEntry(newEntry({ title: 'от B' }));
-    // Пока A сливает, B успевает записать свою версию.
-    let bWrote = false;
-    drive.beforeVersionCheck = () => {
-      bWrote = true;
-      const remote = drive.remoteDoc();
-      const fromB = B.getDoc().entries;
-      drive.file = {
-        id: drive.file!.id,
-        content: JSON.stringify({ ...remote, entries: [...remote.entries, ...fromB] }),
-        version: drive.file!.version + 1,
-      };
+    // Пока A сливает, B успевает целиком синхронизироваться.
+    let bSynced = false;
+    script.beforeSave = async () => {
+      await eb.syncNow();
+      bSynced = true;
     };
+    const loadsBefore = script.loads;
     await ea.syncNow();
-    expect(bWrote).toBe(true);
-    expect(drive.remoteDoc().entries.map((e) => e.title).sort()).toEqual(['от A', 'от B']);
+    expect(bSynced).toBe(true);
+    expect(script.loads - loadsBefore).toBeGreaterThanOrEqual(3); // load A, load B, повторный load A
+    expect(script.remoteDoc().entries.map((e) => e.title).sort()).toEqual(['от A', 'от B']);
+    expect(ea.getState().status).toBe('synced');
     await eb.syncNow();
     expect(same(A.getDoc(), B.getDoc())).toBe(true);
   });
 
-  it('гонка: A перетирает запись B в окне между проверкой версии и PATCH — обе правки сохраняются', async () => {
-    const drive = new FakeDrive();
+  it('постоянный conflict — после 5 попыток ошибка, локальные данные целы', async () => {
+    const script = new FakeScript();
     const A = await newDevice();
-    const B = await newDevice();
-    const ea = engineFor(A, drive);
-    const eb = engineFor(B, drive);
-    const e = newEntry({ title: 'Свадьба' });
-    A.upsertEntry(e);
+    const ea = engineFor(A, script);
     await ea.syncNow();
-    await eb.syncNow();
-
-    // B: правка title и новая запись; A: правка location той же записи и удаление — позже по часам.
-    B.updateEntry(e.id, { title: 'Свадьба Анны' });
-    const extra = newEntry({ title: 'Ретушь' });
-    B.upsertEntry(extra);
-    await new Promise((r) => setTimeout(r, 5));
-    A.updateEntry(e.id, { location: 'Порт' });
-
-    // A уже проверил версию, и ровно перед его PATCH B успевает целиком синхронизироваться.
-    let raced = false;
-    const client = drive.client();
-    const eaRace = engineFor(A, drive, {
-      drive: {
+    A.upsertEntry(newEntry({ title: 'моя' }));
+    const client = script.client();
+    let saves = 0;
+    const e = engineFor(A, script, {
+      client: {
         ...client,
-        async updateDataFile(id, doc) {
-          if (!raced) {
-            raced = true;
-            await eb.syncNow();
-            expect(drive.remoteDoc().entries.find((x) => x.id === e.id)!.title).toBe('Свадьба Анны');
-          }
-          return client.updateDataFile(id, doc); // перетирает запись B
+        async save(doc, baseRev) {
+          saves++;
+          script.writeExternal(script.remoteDoc()); // кто-то всё время пишет раньше
+          return client.save(doc, baseRev);
         },
       },
     });
-    void ea;
-    await eaRace.syncNow();
-    expect(raced).toBe(true);
-
-    await eb.syncNow();
-    await eaRace.syncNow();
-    await eb.syncNow();
-
-    for (const d of [A.getDoc(), B.getDoc(), drive.remoteDoc()]) {
-      const got = d.entries.find((x) => x.id === e.id)!;
-      expect(got.title).toBe('Свадьба Анны');
-      expect(got.location).toBe('Порт');
-      expect(d.entries.some((x) => x.id === extra.id)).toBe(true);
-    }
-    expect(same(A.getDoc(), B.getDoc())).toBe(true);
-    expect(same(A.getDoc(), drive.remoteDoc())).toBe(true);
+    await e.syncNow();
+    expect(saves).toBe(5);
+    expect(e.getState().status).toBe('error');
+    expect(A.getDoc().entries.map((x) => x.title)).toEqual(['моя']);
+    expect(A.isDirty()).toBe(true);
   });
 
   it('правка во время цикла не теряется и уходит следующим циклом', async () => {
-    const drive = new FakeDrive();
+    const script = new FakeScript();
     const A = await newDevice();
-    const ea = engineFor(A, drive);
     A.upsertEntry(newEntry({ title: 'первая' }));
-    drive.beforeVersionCheck = undefined;
-    // Правка прямо во время загрузки (в момент createDataFile).
-    const client = drive.client();
-    const orig = client.createDataFile.bind(client);
-    const e2 = createSyncEngine({
-      store: A,
-      auth: { configured: () => true, isSignedIn: () => true, getToken: async () => 't' },
-      drive: {
-        ...client,
-        async createDataFile(doc) {
-          A.upsertEntry(newEntry({ title: 'вторая' }));
-          return orig(doc);
-        },
-      },
-      isOnline: () => true,
-      env: {},
-    });
-    void ea;
-    await e2.syncNow();
+    script.beforeSave = () => {
+      A.upsertEntry(newEntry({ title: 'вторая' }));
+    };
+    await engineFor(A, script).syncNow();
     expect(A.getDoc().entries.map((e) => e.title).sort()).toEqual(['вторая', 'первая']);
-    expect(drive.remoteDoc().entries.map((e) => e.title).sort()).toEqual(['вторая', 'первая']);
+    expect(script.remoteDoc().entries.map((e) => e.title).sort()).toEqual(['вторая', 'первая']);
     expect(A.isDirty()).toBe(false);
   });
 
-  it('состояния: disabled, needs-auth, offline; ошибка хука пишется в error', async () => {
-    const drive = new FakeDrive();
+  it('смена скрипта: base сбрасывается, данные объединяются, а не удаляются', async () => {
+    const s1 = new FakeScript();
+    const s2 = new FakeScript();
+    const A = await newDevice();
+    let url = 'u1';
+    const keep = newEntry({ title: 'старая' });
+    A.upsertEntry(keep);
+    await engineFor(A, s1, { connectionUrl: () => url }).syncNow();
+
+    url = 'u2';
+    s2.writeExternal({ ...s1.remoteDoc(), entries: [newEntry({ title: 'из нового Drive' })] });
+    const e2 = engineFor(A, s2, { connectionUrl: () => url });
+    await e2.syncNow();
+    const titles = A.getDoc().entries.filter((x) => !x.deleted).map((x) => x.title).sort();
+    expect(titles).toEqual(['из нового Drive', 'старая']);
+    expect(s2.pings).toBe(1); // email нового скрипта запрошен заново
+  });
+
+  it('состояния: disabled, offline, ошибка ключа; ошибка хука не валит синк; хук получает клиент', async () => {
+    const script = new FakeScript();
     const A = await newDevice();
 
-    const disabled = engineFor(A, drive, {
-      auth: { configured: () => false, isSignedIn: () => false, getToken: async () => 't' },
-    });
+    const disabled = engineFor(A, script, { client: { ...script.client(), configured: () => false } });
     await disabled.syncNow();
     expect(disabled.getState().status).toBe('disabled');
 
-    const noAuth = engineFor(A, drive, {
-      auth: {
-        configured: () => true,
-        isSignedIn: () => false,
-        getToken: async () => {
-          throw new NeedsAuthError();
-        },
-      },
-    });
-    await noAuth.syncNow();
-    expect(noAuth.getState().status).toBe('needs-auth');
-
-    const e = engineFor(A, drive);
-    drive.offline = true;
+    const e = engineFor(A, script);
+    script.offline = true;
     await e.syncNow();
     expect(e.getState().status).toBe('offline');
-    drive.offline = false;
+    script.offline = false;
+
+    const offlineDevice = engineFor(A, script, { isOnline: () => false });
+    await offlineDevice.syncNow();
+    expect(offlineDevice.getState().status).toBe('offline');
+
+    script.forbidden = true;
+    await e.syncNow();
+    expect(e.getState()).toMatchObject({ status: 'error', error: 'Неверный ключ' });
+    script.forbidden = false;
 
     const states: SyncState[] = [];
     e.subscribe((s) => states.push(s));
-    let hookToken = '';
-    e.addAfterSyncHook(async (getToken) => {
-      hookToken = await getToken();
+    let hookClient: ScriptClient | undefined;
+    e.addAfterSyncHook(async (client) => {
+      hookClient = client;
       throw new Error('календарь недоступен');
     });
+    let secondHookRan = false;
+    e.addAfterSyncHook(async () => {
+      secondHookRan = true;
+    });
+    A.upsertEntry(newEntry({ title: 'после ошибки' }));
     await e.syncNow();
-    expect(hookToken).toBe('token');
+    expect(hookClient?.configured()).toBe(true);
+    expect(secondHookRan).toBe(true);
     expect(e.getState().status).toBe('synced');
     expect(e.getState().error).toContain('календарь недоступен');
     expect(states.map((s) => s.status)).toContain('syncing');
-
-    // 401 от Drive при «живом» токене: токен сбрасывается, цикл повторяется один раз.
-    let invalidated = 0;
-    const e401 = engineFor(A, drive, {
-      invalidateToken: () => {
-        invalidated++;
-        drive.unauthorized = false;
-      },
-    });
-    drive.unauthorized = true;
-    A.upsertEntry(newEntry({ title: 'после 401' }));
-    await e401.syncNow();
-    expect(invalidated).toBe(1);
-    expect(e401.getState().status).toBe('synced');
+    expect(script.remoteDoc().entries.some((x) => x.title === 'после ошибки')).toBe(true);
   });
 
-  it('start(): цикл при старте, после правки (debounce), при online и возврате на вкладку; needs-auth не долбит', async () => {
-    const drive = new FakeDrive();
+  it('устаревший скрипт (другой protocol) — предупреждение, синк проходит', async () => {
+    const script = new FakeScript();
+    script.protocol = 0;
     const A = await newDevice();
-    let finds = 0;
-    const client = drive.client();
+    const e = engineFor(A, script);
+    await e.syncNow();
+    expect(e.getState().status).toBe('synced');
+    expect(e.getState().error).toMatch(/устарел/);
+  });
+
+  it('start(): цикл при старте, после правки (debounce), при online и возврате на вкладку; без подключения не долбит', async () => {
+    const script = new FakeScript();
+    const A = await newDevice();
     const winListeners: Record<string, () => void> = {};
     let visibility: ((v: boolean) => void) | undefined;
-    let signedIn = true;
-    const e = engineFor(A, drive, {
-      drive: {
-        ...client,
-        async findDataFile() {
-          finds++;
-          return client.findDataFile();
-        },
-      },
-      auth: {
-        configured: () => true,
-        isSignedIn: () => signedIn,
-        getToken: async () => {
-          if (!signedIn) throw new NeedsAuthError();
-          return 't';
-        },
+    let connected = true;
+    let connListener: (() => void) | undefined;
+    const e = engineFor(A, script, {
+      client: { ...script.client(), configured: () => connected },
+      onConnectionChange: (fn) => {
+        connListener = fn;
+        return () => (connListener = undefined);
       },
       debounceMs: 20,
       intervalMs: 60_000,
@@ -378,55 +351,54 @@ describe('syncEngine: два устройства через один Drive', ()
     e.start();
     expect(e.getState().status).toBe('syncing'); // цикл при старте уже идёт
     await e.syncNow(); // запрос во время цикла → ещё один цикл после
-    expect(finds).toBe(2);
+    expect(script.loads).toBe(2);
 
     A.upsertEntry(newEntry({ title: 'правка' }));
     await wait(60);
     await e.syncNow(); // дождаться, если цикл ещё идёт
-    expect(drive.remoteDoc().entries).toHaveLength(1);
-    const afterEdit = finds;
+    expect(script.remoteDoc().entries).toHaveLength(1);
+    const afterEdit = script.loads;
 
     winListeners.online();
     await e.syncNow();
     visibility!(false);
     visibility!(true);
     await e.syncNow();
-    expect(finds).toBeGreaterThan(afterEdit);
+    expect(script.loads).toBeGreaterThan(afterEdit);
 
-    // Нужен вход: автоматические триггеры не запускают цикл.
-    signedIn = false;
+    // Отключили: статус disabled, автоматические триггеры не запускают запросы.
+    connected = false;
+    connListener!();
     await e.syncNow();
-    expect(e.getState().status).toBe('needs-auth');
-    const n = finds;
+    expect(e.getState().status).toBe('disabled');
+    expect(e.getState().account).toBeUndefined();
+    const n = script.loads;
     winListeners.online();
     visibility!(true);
     A.upsertEntry(newEntry({ title: 'ещё' }));
     await wait(60);
-    expect(finds).toBe(n);
+    expect(script.loads).toBe(n);
+
+    // Подключили снова — цикл сразу.
+    connected = true;
+    connListener!();
+    await e.syncNow();
+    expect(script.remoteDoc().entries).toHaveLength(2);
 
     e.stop();
     expect(Object.keys(winListeners)).toEqual([]);
     expect(visibility).toBeUndefined();
+    expect(connListener).toBeUndefined();
   });
 
   it('syncNow во время цикла запускает ещё один цикл после текущего', async () => {
-    const drive = new FakeDrive();
+    const script = new FakeScript();
     const A = await newDevice();
-    let finds = 0;
-    const client = drive.client();
-    const e = engineFor(A, drive, {
-      drive: {
-        ...client,
-        async findDataFile() {
-          finds++;
-          return client.findDataFile();
-        },
-      },
-    });
+    const e = engineFor(A, script);
     const p1 = e.syncNow();
     const p2 = e.syncNow();
     const p3 = e.syncNow();
     await Promise.all([p1, p2, p3]);
-    expect(finds).toBe(2);
+    expect(script.loads).toBe(2);
   });
 });

@@ -1,17 +1,19 @@
-// Синхронизация с Google Календарём (SPEC §10): Calendar REST v3 через fetch, без своего сервера.
-// Скоуп calendar.app.created — работаем только с календарём, который создало приложение;
-// primary и calendarList других календарей не трогаем.
+// Синхронизация с Google Календарём (SPEC §10) через Google Apps Script в аккаунте пользователя.
+// Трекер готовит полный список событий (DesiredEvent) и шлёт скрипту запрос `calendar`; скрипт сам
+// ведёт отдельный календарь через CalendarApp (src/calendar/calendarGs.ts) и отвечает, что пользователь
+// перенёс или удалил в календаре и какие чужие события там есть. Основной календарь не трогается.
 import type { AfterSyncHook } from '../sync/types';
+import type { CalendarResponse, DesiredEvent, ScriptClient } from '../sync/scriptApi';
 import type { Entry, Settings, TrackerDoc } from '../model/types';
 import { newEntry } from '../model/entry';
 import { store as defaultStore } from '../store/store';
 import {
   CALENDAR_TIME_ZONE,
-  entryToEvent,
-  eventHash,
-  eventToEntryPatch,
-  eventToProposalFields,
-  type GCalEvent,
+  calendarWindow,
+  desiredInWindow,
+  entryToDesired,
+  foreignToFields,
+  movedToPatch,
 } from './mapping';
 
 /** События календаря «Съёмки», созданные не приложением, — предложить импорт (SPEC §10). */
@@ -19,10 +21,18 @@ export interface CalendarProposal {
   eventId: string;
   title: string;
   date?: string;
+  /** Последний день многодневного события. */
+  dateEnd?: string;
   timeStart?: string;
   timeEnd?: string;
   location?: string;
 }
+
+/**
+ * DesiredEvent + необязательный adoptEventId — расширение контракта scriptApi: id чужого события,
+ * из которого импортирована запись. Скрипт помечает само это событие, а не создаёт рядом дубль.
+ */
+export type DesiredEventToSend = DesiredEvent & { adoptEventId?: string };
 
 /** То, что модуль использует из TrackerStore (для тестов подставляется настоящий store на fake-indexeddb). */
 export interface CalendarStoreLike {
@@ -34,14 +44,9 @@ export interface CalendarStoreLike {
 }
 
 export interface CalendarSyncDeps {
-  fetch: typeof fetch;
   store: CalendarStoreLike;
-  /** Пауза перед повтором при rateLimitExceeded (в тестах — мгновенная). */
-  sleep?: (ms: number) => Promise<void>;
-  /** Сколько запросов к API одновременно. По умолчанию 4. */
-  concurrency?: number;
-  /** Повторов при 403 rateLimitExceeded / 429 / 5xx. По умолчанию 5. */
-  maxRetries?: number;
+  /** Текущее время (для окна поиска). */
+  now?: () => Date;
 }
 
 export interface CalendarSync {
@@ -51,45 +56,18 @@ export interface CalendarSync {
   dismissProposal(eventId: string): void;
 }
 
-export class CalendarApiError extends Error {
-  constructor(
-    readonly status: number,
-    readonly reason: string | undefined,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'CalendarApiError';
-  }
-}
-
-export const CALENDAR_API = 'https://www.googleapis.com/calendar/v3';
-const META_STATE = 'calendarState';
+/** Событие удалили в календаре: entryId → хэш записи на тот момент. Пока хэш не изменится — не выгружаем. */
+export const META_REMOVED = 'calendarRemoved';
 const META_PROPOSALS = 'calendarProposals';
-const RATE_REASONS = new Set(['rateLimitExceeded', 'userRateLimitExceeded', 'quotaExceeded']);
-
-/** Локальное (на устройство) состояние синхронизации — в meta IndexedDB, не в Drive. */
-interface SyncState {
-  calendarId?: string;
-  syncToken?: string;
-  /** entryId → событие в календаре и хэш выгруженного в него содержимого. */
-  pushed: Record<string, { eventId: string; hash: string }>;
-  /** Событие удалили в календаре: entryId → хэш на тот момент. Пока запись не изменится — не выгружаем снова. */
-  unlinked: Record<string, string>;
-}
 
 interface ProposalsState {
   list: CalendarProposal[];
   dismissed: string[];
 }
 
-const enc = encodeURIComponent;
-
 export function createCalendarSync(deps: CalendarSyncDeps): CalendarSync {
   const { store } = deps;
-  const doFetch = deps.fetch;
-  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-  const concurrency = Math.max(1, deps.concurrency ?? 4);
-  const maxRetries = deps.maxRetries ?? 5;
+  const now = deps.now ?? (() => new Date());
 
   let proposals: ProposalsState = { list: [], dismissed: [] };
   let proposalsLoad: Promise<void> | undefined;
@@ -129,309 +107,92 @@ export function createCalendarSync(deps: CalendarSyncDeps): CalendarSync {
     return store.setMeta(META_PROPOSALS, proposals);
   }
 
-  // ---------- HTTP ----------
+  // ---------- цикл ----------
 
-  interface ReqOpts {
-    query?: Record<string, string | undefined>;
-    body?: unknown;
-  }
-
-  async function request<T>(getToken: () => Promise<string>, method: string, path: string, opts: ReqOpts = {}): Promise<T> {
-    const url = new URL(CALENDAR_API + path);
-    for (const [k, v] of Object.entries(opts.query ?? {})) if (v !== undefined) url.searchParams.set(k, v);
-    let authRetried = false;
-    for (let attempt = 0; ; attempt++) {
-      const token = await getToken();
-      const res = await doFetch(url.toString(), {
-        method,
-        headers: {
-          Authorization: 'Bearer ' + token,
-          ...(opts.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-        },
-        body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
-      });
-      if (res.ok) {
-        if (res.status === 204) return undefined as T;
-        const text = await res.text();
-        return (text ? JSON.parse(text) : undefined) as T;
-      }
-      let reason: string | undefined;
-      let message = `Calendar API ${method} ${path}: HTTP ${res.status}`;
-      try {
-        const j = (await res.json()) as { error?: { message?: string; errors?: { reason?: string }[] } };
-        reason = j.error?.errors?.[0]?.reason;
-        if (j.error?.message) message += ' — ' + j.error.message;
-      } catch {
-        /* тело не JSON */
-      }
-      if (res.status === 401 && !authRetried) {
-        authRetried = true; // getToken обновит протухший токен
-        continue;
-      }
-      const retryable =
-        res.status === 429 || res.status >= 500 || (res.status === 403 && reason !== undefined && RATE_REASONS.has(reason));
-      if (retryable && attempt < maxRetries) {
-        await sleep(Math.min(32_000, 1000 * 2 ** attempt) + Math.floor(Math.random() * 250));
-        continue;
-      }
-      throw new CalendarApiError(res.status, reason, message);
-    }
-  }
-
-  const isGone = (e: unknown) => e instanceof CalendarApiError && (e.status === 404 || e.status === 410);
-
-  async function pool<T>(items: T[], fn: (item: T) => Promise<void>): Promise<unknown[]> {
-    const errors: unknown[] = [];
-    let i = 0;
-    const worker = async () => {
-      while (i < items.length) {
-        const item = items[i++];
-        try {
-          await fn(item);
-        } catch (e) {
-          errors.push(e);
-        }
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
-    return errors;
-  }
-
-  // ---------- шаги синхронизации ----------
-
-  async function ensureCalendar(getToken: () => Promise<string>): Promise<string> {
-    const cal = store.getDoc().settings.calendar;
-    if (cal.calendarId) {
-      try {
-        const c = await request<{ id: string; summary?: string }>(getToken, 'GET', `/calendars/${enc(cal.calendarId)}`);
-        if (cal.calendarName && c.summary !== cal.calendarName) {
-          await request(getToken, 'PATCH', `/calendars/${enc(cal.calendarId)}`, { body: { summary: cal.calendarName } });
-        }
-        return cal.calendarId;
-      } catch (e) {
-        if (!isGone(e)) throw e;
-        // календарь удалили — создаём заново
-      }
-    }
-    const created = await request<{ id: string }>(getToken, 'POST', '/calendars', {
-      body: { summary: cal.calendarName || 'Съёмки', timeZone: CALENDAR_TIME_ZONE },
-    });
-    const cur = store.getDoc().settings.calendar;
-    store.updateSettings({ calendar: { ...cur, calendarId: created.id, syncToken: undefined } });
-    return created.id;
-  }
-
-  async function listChanges(
-    getToken: () => Promise<string>,
-    calendarId: string,
-    state: SyncState,
-  ): Promise<{ items: GCalEvent[]; nextSyncToken?: string; full: boolean }> {
-    let syncToken = state.syncToken;
-    for (;;) {
-      const items: GCalEvent[] = [];
-      let pageToken: string | undefined;
-      let nextSyncToken: string | undefined;
-      try {
-        do {
-          const page = await request<{ items?: GCalEvent[]; nextPageToken?: string; nextSyncToken?: string }>(
-            getToken,
-            'GET',
-            `/calendars/${enc(calendarId)}/events`,
-            { query: { syncToken, pageToken, maxResults: '250' } },
-          );
-          items.push(...(page.items ?? []));
-          pageToken = page.nextPageToken;
-          nextSyncToken = page.nextSyncToken;
-        } while (pageToken);
-      } catch (e) {
-        if (syncToken && e instanceof CalendarApiError && e.status === 410) {
-          syncToken = undefined; // токен протух — полная выборка
-          continue;
-        }
-        throw e;
-      }
-      return { items, nextSyncToken, full: !syncToken };
-    }
-  }
-
-  /** Входящие: перенос времени, удаление события в календаре, чужие события → предложения. */
-  function applyIncoming(items: GCalEvent[], state: SyncState): boolean {
+  async function run(client: ScriptClient): Promise<void> {
     const doc = store.getDoc();
-    const byId = new Map(doc.entries.map((e) => [e.id, e]));
-    const byEventId = new Map(doc.entries.filter((e) => e.calendarEventId).map((e) => [e.calendarEventId!, e]));
-    const dismissed = new Set(proposals.dismissed);
-    let proposalsChanged = false;
-
-    const unlink = (entry: Entry, eventId: string) => {
-      if (entry.deleted) return;
-      if (entry.calendarEventId && entry.calendarEventId !== eventId) return;
-      if (entry.calendarEventId) store.updateEntry(entry.id, { calendarEventId: undefined });
-      const want = entryToEvent(entry, doc);
-      if (want) state.unlinked[entry.id] = eventHash(want)!;
-    };
-    const dropProposal = (eventId: string) => {
-      const n = proposals.list.length;
-      proposals.list = proposals.list.filter((p) => p.eventId !== eventId);
-      if (proposals.list.length !== n) proposalsChanged = true;
-    };
-
-    for (const ev of items) {
-      if (!ev.id) continue;
-      const entryId = ev.extendedProperties?.private?.entryId;
-      const cancelled = ev.status === 'cancelled';
-
-      if (!entryId) {
-        const linked = byEventId.get(ev.id);
-        if (cancelled || linked) {
-          dropProposal(ev.id);
-          if (cancelled && linked) unlink(linked, ev.id);
-          continue;
-        }
-        if (dismissed.has(ev.id)) continue;
-        const p: CalendarProposal = {
-          eventId: ev.id,
-          title: ev.summary?.trim() || '(без названия)',
-          ...eventToProposalFields(ev),
-          ...(ev.location ? { location: ev.location } : {}),
-        };
-        const i = proposals.list.findIndex((x) => x.eventId === ev.id);
-        if (i >= 0) proposals.list[i] = p;
-        else proposals.list.push(p);
-        proposalsChanged = true;
-        continue;
-      }
-
-      const entry = byId.get(entryId);
-      if (cancelled) {
-        if (state.pushed[entryId]?.eventId === ev.id) delete state.pushed[entryId];
-        if (entry) unlink(entry, ev.id);
-        continue;
-      }
-      if (entry?.calendarEventId && entry.calendarEventId !== ev.id) {
-        // дубль (например, две копии приложения выгрузили одновременно) — не трогаем
-        continue;
-      }
-      state.pushed[entryId] = { eventId: ev.id, hash: eventHash(ev) ?? '' };
-      if (!entry) continue; // запись ещё не пришла из Drive — привяжем, когда придёт
-      const patch: Partial<Entry> = {};
-      if (!entry.calendarEventId) patch.calendarEventId = ev.id;
-      if (!entry.deleted) Object.assign(patch, eventToEntryPatch(ev, entry) ?? {});
-      if (Object.keys(patch).length) store.updateEntry(entry.id, patch);
-    }
-    return proposalsChanged;
-  }
-
-  /** Исходящие: insert / update / delete по разнице между записями и выгруженным. */
-  async function pushOutgoing(getToken: () => Promise<string>, calendarId: string, state: SyncState): Promise<unknown[]> {
-    const doc = store.getDoc();
-    const base = `/calendars/${enc(calendarId)}/events`;
-    type Task = () => Promise<void>;
-    const tasks: Task[] = [];
-
-    const insert = async (entry: Entry, body: GCalEvent) => {
-      const created = await request<GCalEvent>(getToken, 'POST', base, { body });
-      state.pushed[entry.id] = { eventId: created.id!, hash: eventHash(body)! };
-      store.updateEntry(entry.id, { calendarEventId: created.id });
-    };
-
-    for (const entry of doc.entries) {
-      const want = entryToEvent(entry, doc);
-      const known = state.pushed[entry.id];
-      let eventId: string | undefined = entry.calendarEventId ?? known?.eventId;
-
-      if (!want) {
-        delete state.unlinked[entry.id];
-        if (!eventId) continue;
-        const id = eventId;
-        tasks.push(async () => {
-          try {
-            await request(getToken, 'DELETE', `${base}/${enc(id)}`);
-          } catch (e) {
-            if (!isGone(e)) throw e;
-          }
-          delete state.pushed[entry.id];
-          if (entry.calendarEventId) store.updateEntry(entry.id, { calendarEventId: undefined });
-        });
-        continue;
-      }
-
-      const hash = eventHash(want)!;
-      if (state.unlinked[entry.id] !== undefined) {
-        if (state.unlinked[entry.id] === hash) continue; // удалено в календаре, запись не менялась
-        delete state.unlinked[entry.id];
-        eventId = undefined; // запись изменилась — выгружаем заново новым событием
-      }
-
-      if (!eventId) {
-        tasks.push(() => insert(entry, want));
-      } else if (known && known.eventId === eventId && known.hash === hash) {
-        if (!entry.calendarEventId) store.updateEntry(entry.id, { calendarEventId: eventId });
-      } else {
-        const id = eventId;
-        tasks.push(async () => {
-          try {
-            // PUT, а не PATCH: тело полное, а переход «весь день ↔ со временем» и снятые поля
-            // через PATCH пришлось бы обнулять явно.
-            await request(getToken, 'PUT', `${base}/${enc(id)}`, { body: want });
-          } catch (e) {
-            if (!isGone(e)) throw e;
-            await insert(entry, want); // события нет (другой календарь) — создаём
-            return;
-          }
-          state.pushed[entry.id] = { eventId: id, hash };
-          if (entry.calendarEventId !== id) store.updateEntry(entry.id, { calendarEventId: id });
-        });
-      }
-    }
-    return pool(tasks, (t) => t());
-  }
-
-  async function run(getToken: () => Promise<string>): Promise<void> {
-    if (!store.getDoc().settings.calendar.enabled) return;
+    const cal = doc.settings.calendar;
+    if (!cal.enabled || !client.configured()) return;
     await loadProposals();
 
-    const calendarId = await ensureCalendar(getToken);
-    const saved = await store.getMeta<SyncState>(META_STATE);
-    let state: SyncState =
-      saved && saved.calendarId === calendarId
-        ? { ...saved, pushed: saved.pushed ?? {}, unlinked: saved.unlinked ?? {} }
-        : { calendarId, pushed: {}, unlinked: {} };
+    const removed: Record<string, string> = { ...((await store.getMeta<Record<string, string>>(META_REMOVED)) ?? {}) };
+    let removedChanged = false;
+    const { windowStart, windowEnd } = calendarWindow(now());
 
-    // 1. входящие — раньше исходящих, чтобы не затереть перенос, сделанный в календаре
-    const { items, nextSyncToken, full } = await listChanges(getToken, calendarId, state);
-    if (full) state = { ...state, pushed: {} }; // полная выборка — карта выгруженного строится заново
-    let proposalsChanged = applyIncoming(items, state);
-    if (full) {
-      // полная выборка — предложения по событиям, которых больше нет, убираем
-      const alive = new Set(items.filter((e) => e.status !== 'cancelled').map((e) => e.id));
-      const n = proposals.list.length;
-      proposals.list = proposals.list.filter((p) => alive.has(p.eventId));
-      proposalsChanged ||= proposals.list.length !== n;
+    const events: DesiredEventToSend[] = [];
+    for (const entry of doc.entries) {
+      const d: DesiredEventToSend | null = entryToDesired(entry, doc);
+      if (!d) {
+        if (removed[entry.id] !== undefined) {
+          delete removed[entry.id];
+          removedChanged = true;
+        }
+        continue;
+      }
+      if (!desiredInWindow(d, windowStart)) continue;
+      if (removed[entry.id] !== undefined) {
+        if (removed[entry.id] === d.hash) continue; // удалено в календаре, запись не менялась
+        delete removed[entry.id]; // запись изменилась — выгружаем снова
+        removedChanged = true;
+      }
+      if (entry.calendarEventId) d.adoptEventId = entry.calendarEventId;
+      events.push(d);
     }
-    state.syncToken = nextSyncToken ?? state.syncToken;
-    await store.setMeta(META_STATE, state);
-    if (proposalsChanged) await saveProposals();
 
-    // 2. исходящие
-    let errors: unknown[] = [];
-    try {
-      errors = await pushOutgoing(getToken, calendarId, state);
-    } finally {
-      await store.setMeta(META_STATE, state);
-      emitProposals();
+    const res: CalendarResponse = await client.calendar({
+      calendarName: cal.calendarName || 'Съёмки',
+      timeZone: CALENDAR_TIME_ZONE,
+      events,
+      windowStart,
+      windowEnd,
+    });
+
+    // перенос в календаре → дата/время записи (уйдёт в Drive как обычная правка)
+    if (res.moved.length) {
+      const byId = new Map(store.getDoc().entries.map((e) => [e.id, e]));
+      for (const m of res.moved) {
+        const entry = byId.get(m.entryId);
+        if (!entry || entry.deleted) continue;
+        const patch = movedToPatch(m, entry);
+        if (patch) store.updateEntry(entry.id, patch);
+      }
     }
-    if (errors.length) {
-      const first = errors[0];
-      throw first instanceof Error
-        ? new Error(`Календарь: не выгружено ${errors.length} событий — ${first.message}`, { cause: first })
-        : first;
+
+    // удалено пользователем в календаре — запомнить хэш, чтобы не выгружать снова
+    if (res.removedByUser.length) {
+      const sent = new Map(events.map((d) => [d.entryId, d.hash]));
+      for (const id of res.removedByUser) {
+        const hash = sent.get(id);
+        if (hash === undefined) continue;
+        removed[id] = hash;
+        removedChanged = true;
+      }
+    }
+    if (removedChanged) await store.setMeta(META_REMOVED, removed);
+
+    // чужие события → предложения (окно приходит целиком, поэтому список заменяется)
+    const dismissed = new Set(proposals.dismissed);
+    proposals.list = res.foreign
+      .filter((f) => !dismissed.has(f.eventId))
+      .map((f) => ({
+        eventId: f.eventId,
+        title: f.title?.trim() || '(без названия)',
+        ...foreignToFields(f),
+        ...(f.location ? { location: f.location } : {}),
+      }));
+    await saveProposals();
+    emitProposals();
+
+    const curCal = store.getDoc().settings.calendar;
+    if (res.calendarId && res.calendarId !== curCal.calendarId) {
+      store.updateSettings({ calendar: { ...curCal, calendarId: res.calendarId } });
     }
   }
 
   return {
-    afterSync(getToken) {
+    afterSync(client) {
       // повторный вызов во время работы ждёт текущий прогон, а не запускает второй параллельно
-      running ??= run(getToken).finally(() => {
+      running ??= run(client).finally(() => {
         running = undefined;
       });
       return running;
@@ -456,16 +217,16 @@ export function createCalendarSync(deps: CalendarSyncDeps): CalendarSync {
   };
 }
 
-// ---------- экспорт по умолчанию: глобальные fetch и store ----------
+// ---------- экспорт по умолчанию: глобальный store ----------
 
 let defaultSync: CalendarSync | undefined;
 function getDefault(): CalendarSync {
-  defaultSync ??= createCalendarSync({ fetch: (...args) => fetch(...args), store: defaultStore });
+  defaultSync ??= createCalendarSync({ store: defaultStore });
   return defaultSync;
 }
 
-/** Хук после синхронизации Drive: выгрузить изменения в календарь и подтянуть перенос времени. */
-export const calendarAfterSync: AfterSyncHook = (getToken) => getDefault().afterSync(getToken);
+/** Хук после синхронизации данных: выгрузить записи в календарь и подтянуть перенос времени. */
+export const calendarAfterSync: AfterSyncHook = (client) => getDefault().afterSync(client);
 
 export function getCalendarProposals(): CalendarProposal[] {
   return getDefault().getProposals();
@@ -486,10 +247,12 @@ export function proposalToEntry(p: CalendarProposal): Entry {
     kind: 'shoot',
     title: p.title,
     date: p.date,
+    dateEnd: p.dateEnd,
     timeStart: p.timeStart,
     timeEnd: p.timeEnd,
     allDay: !p.timeStart,
     location: p.location,
+    // по этому id скрипт пометит само чужое событие, а не создаст рядом дубль
     calendarEventId: p.eventId,
   });
 }

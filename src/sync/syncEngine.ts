@@ -1,26 +1,22 @@
-// Синхронизатор store ↔ Drive appDataFolder/tracker.json (SPEC §7).
+// Синхронизатор store ↔ tracker.json в Drive пользователя через Google Apps Script (SPEC §7).
 //
-// Цикл: getToken → скачать tracker.json (нет — создать из локального) → merge(base, local, remote)
-// → если результат отличается от remote — записать с проверкой версии (изменилась — повторить цикл)
-// → применить локально → base = результат → журнал конфликтов → бэкап раз в сутки → afterSync-хуки.
+// Цикл: load() → merge(base, local, remote ?? local) → если результат отличается от remote или файла
+// ещё нет → save(result, rev). Скрипт пишет под блокировкой и только если ревизия не изменилась с load,
+// иначе отвечает conflict — тогда цикл повторяется (до 5 раз). Успех → применить локально → base =
+// результат → журнал конфликтов → afterSync-хуки (календарь) получают клиент скрипта.
+// Бэкапы раз в сутки делает сам скрипт.
 // Запуски: при старте, при возврате на вкладку, при появлении сети, раз в 60 с и через ~3 с после
 // локальной правки. Одновременно идёт один цикл; запрос во время цикла — ещё один цикл после него.
-import {
-  auth as defaultAuth,
-  invalidateToken,
-  NeedsAuthError,
-  onAuthChange,
-  rememberAccount,
-  type GoogleAuth,
-} from './auth';
-import { createDriveClient, DriveHttpError, OfflineError, type DriveApi } from './drive';
+import { OfflineError, ScriptCallError } from './errors';
 import { deepEqual, merge } from './merge';
+import { SCRIPT_PROTOCOL_VERSION, type ScriptClient } from './scriptApi';
+import { getConnection, onConnectionChange, scriptClient } from './scriptClient';
 import type { AfterSyncHook, Conflict, SyncState } from './types';
 import type { Settings, TrackerDoc } from '../model/types';
 import { DEFAULT_SETTINGS } from '../model/types';
 import { store as defaultStore, type TrackerStore } from '../store/store';
 
-/** Синхронизатор store ↔ Drive appDataFolder/tracker.json (SPEC §7). */
+/** Синхронизатор store ↔ tracker.json в Drive (через Apps Script). */
 export interface SyncEngine {
   start(): void;
   stop(): void;
@@ -34,8 +30,10 @@ export interface SyncEngine {
 export const META_BASE = 'sync.base';
 export const META_CONFLICTS = 'sync.conflicts';
 export const META_LAST_SYNC = 'sync.lastSyncAt';
-export const META_LAST_BACKUP = 'sync.lastBackupDate';
+/** { url, email } — email владельца скрипта для подключения с этим адресом. */
 export const META_ACCOUNT = 'sync.account';
+/** Адрес скрипта, с которым снят base-снимок. Другой адрес → base сбрасывается. */
+export const META_SYNC_URL = 'sync.scriptUrl';
 export const MAX_CONFLICTS = 200;
 const MAX_ATTEMPTS = 5;
 
@@ -52,18 +50,14 @@ export interface SyncEnv {
 
 export interface SyncEngineDeps {
   store: SyncStore;
-  auth: Pick<GoogleAuth, 'configured' | 'getToken' | 'isSignedIn'>;
-  /** Клиент Drive; по умолчанию — createDriveClient(auth.getToken). */
-  drive?: DriveApi;
+  client: ScriptClient;
+  /** Адрес текущего подключения (для сброса base при смене скрипта). По умолчанию — из localStorage. */
+  connectionUrl?: () => string | undefined;
+  /** Подписка на подключение/отключение — после него запускается цикл. */
+  onConnectionChange?: (fn: () => void) => () => void;
   now?: () => Date;
   isOnline?: () => boolean;
   env?: SyncEnv;
-  /** Подписка на вход/выход — после входа запускается цикл. */
-  onAuthChange?: (fn: () => void) => () => void;
-  /** Сообщить email аккаунта модулю авторизации (подсказка для тихого входа). */
-  rememberAccount?: (email: string) => void;
-  /** Забыть токен в памяти (Drive ответил 401) — следующий getToken запросит новый. */
-  invalidateToken?: () => void;
   intervalMs?: number;
   debounceMs?: number;
 }
@@ -118,17 +112,15 @@ function isOfflineError(e: unknown): boolean {
   return e instanceof OfflineError || (e instanceof TypeError && /fetch|network/i.test(e.message));
 }
 
-class VersionChangedError extends Error {}
+class RevisionConflict extends Error {}
 
 export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
-  const { store } = deps;
-  const authApi = deps.auth;
-  const drive = deps.drive ?? createDriveClient(() => authApi.getToken());
+  const { store, client } = deps;
   const now = deps.now ?? (() => new Date());
   const isOnline = deps.isOnline ?? defaultIsOnline;
   const intervalMs = deps.intervalMs ?? 60_000;
   const debounceMs = deps.debounceMs ?? 3_000;
-  const getToken = () => authApi.getToken();
+  const connectionUrl = deps.connectionUrl ?? (() => getConnection()?.url);
 
   let state: SyncState = { status: 'disabled' };
   let stateInitialized = false;
@@ -146,6 +138,7 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
   function setState(patch: Partial<SyncState>, replaceError = false): void {
     const next: SyncState = { ...state, ...patch };
     if (replaceError && !('error' in patch)) delete next.error;
+    if ('account' in patch && patch.account === undefined) delete next.account;
     stateInitialized = true;
     if (deepEqual(next, state)) return;
     state = next;
@@ -159,8 +152,7 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
   }
 
   function idleStatus(): SyncState['status'] {
-    if (!authApi.configured()) return 'disabled';
-    if (!authApi.isSignedIn()) return 'needs-auth';
+    if (!client.configured()) return 'disabled';
     if (!isOnline()) return 'offline';
     return store.isDirty() ? 'dirty' : 'synced';
   }
@@ -175,13 +167,9 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     }
   });
 
-  /**
-   * Автоматический запуск (таймер, сеть, вкладка, правка). Пока нужен вход — не запускаем: тихий
-   * запрос токена GIS открывает окно/iframe, и делать его раз в минуту нельзя. Ждём входа по кнопке
-   * (onAuthChange) или явного syncNow().
-   */
+  /** Автоматический запуск (таймер, сеть, вкладка, правка). Без подключения — не запускаем. */
   function autoSync(): void {
-    if (state.status === 'needs-auth') return;
+    if (!client.configured()) return;
     void engine.syncNow();
   }
 
@@ -191,34 +179,20 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     await store.setMeta(META_CONFLICTS, [...prev, ...list].slice(-MAX_CONFLICTS));
   }
 
-  /** Одна попытка: true — успех, VersionChangedError — файл изменился, нужно повторить. */
-  async function attempt(): Promise<{ result: TrackerDoc }> {
+  /** Одна попытка. RevisionConflict — файл успел измениться другим устройством, нужно повторить. */
+  async function attempt(): Promise<TrackerDoc> {
     const rev0 = localRev;
     const local = store.getDoc();
-    const base = await store.getMeta<TrackerDoc>(META_BASE);
-    const file = await drive.findDataFile();
+    const base = (await store.getMeta<TrackerDoc | null>(META_BASE)) ?? undefined;
+    const loaded = await client.load();
+    const remote = loaded.doc ? normalizeDoc(loaded.doc) : null;
 
-    let result: TrackerDoc;
-    let conflicts: Conflict[] = [];
-    if (!file) {
-      result = merge(base, local, local, { now: now() }).doc;
-      await drive.createDataFile(result);
-    } else {
-      const dl = await drive.download(file.id);
-      const remote = normalizeDoc(dl.doc);
-      const m = merge(base, local, remote, { now: now() });
-      result = m.doc;
-      conflicts = m.conflicts;
-      if (!deepEqual(result, remote)) {
-        // Drive не умеет If-Match для содержимого: перечитываем версию прямо перед записью (см. drive.ts).
-        const current = await drive.getVersion(file.id);
-        if (current !== dl.version) throw new VersionChangedError();
-        const written = await drive.updateDataFile(file.id, result);
-        // Версия выросла больше чем на 1 — между проверкой и записью файл писал кто-то ещё, и мы могли
-        // перетереть его правки. Сразу ещё один цикл (сами правки слияние сохранит у автора: см. merge.ts).
-        const expected = Number(dl.version) + 1;
-        if (Number.isFinite(expected) && Number(written.version) > expected) requested = true;
-      }
+    const m = merge(base, local, remote ?? local, { now: now() });
+    const result = m.doc;
+    if (!remote || !deepEqual(result, remote)) {
+      // Скрипт запишет, только если ревизия всё ещё loaded.rev (под блокировкой) — запись атомарна.
+      const saved = await client.save(result, loaded.rev);
+      if (saved.ok === false) throw new RevisionConflict();
     }
 
     // Применить локально. replaceDoc синхронный, поэтому между проверкой и заменой правок не будет.
@@ -232,13 +206,43 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       requested = true;
     }
     await store.setMeta(META_BASE, result);
-    await appendConflicts(conflicts);
-    return { result };
+    await appendConflicts(remote ? m.conflicts : []);
+    return result;
+  }
+
+  /** Сменился адрес скрипта (другой Drive / новый скрипт) — base от старого файла сливать нельзя. */
+  async function checkConnectionChanged(url: string): Promise<void> {
+    if ((await store.getMeta<string>(META_SYNC_URL)) === url) return;
+    await store.setMeta(META_BASE, null);
+    await store.setMeta(META_ACCOUNT, null);
+    await store.setMeta(META_SYNC_URL, url);
+    setState({ account: undefined });
+  }
+
+  async function refreshAccount(url: string, errors: string[]): Promise<void> {
+    if (state.account) return;
+    try {
+      const cached = await store.getMeta<{ url: string; email: string } | null>(META_ACCOUNT);
+      if (cached && typeof cached === 'object' && cached.url === url && cached.email) {
+        setState({ account: cached.email });
+        return;
+      }
+      const ping = await client.ping();
+      if (ping.protocol !== SCRIPT_PROTOCOL_VERSION) {
+        errors.push('Скрипт в Google устарел — в настройках нажмите «Показать код скрипта ещё раз» и обновите его');
+      }
+      if (ping.email) {
+        await store.setMeta(META_ACCOUNT, { url, email: ping.email });
+        setState({ account: ping.email });
+      }
+    } catch {
+      /* не критично */
+    }
   }
 
   async function runCycle(): Promise<void> {
-    if (!authApi.configured()) {
-      setState({ status: 'disabled' }, true);
+    if (!client.configured()) {
+      setState({ status: 'disabled', account: undefined }, true);
       return;
     }
     if (!isOnline()) {
@@ -246,30 +250,21 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       return;
     }
     setState({ status: 'syncing' }, true);
-    let result: TrackerDoc | undefined;
-    const syncDrive = async (): Promise<TrackerDoc> => {
-      await getToken();
-      for (let i = 0; i < MAX_ATTEMPTS; i++) {
+    const url = connectionUrl() ?? '';
+    try {
+      await checkConnectionChanged(url);
+      let ok = false;
+      for (let i = 0; i < MAX_ATTEMPTS && !ok; i++) {
         try {
-          return (await attempt()).result;
+          await attempt();
+          ok = true;
         } catch (e) {
-          if (!(e instanceof VersionChangedError)) throw e;
+          if (!(e instanceof RevisionConflict)) throw e;
         }
       }
-      throw new Error('Файл в Drive постоянно меняется другим устройством — повторю позже');
-    };
-    try {
-      try {
-        result = await syncDrive();
-      } catch (e) {
-        // 401 при «живом» по часам токене (отозван/истёк раньше) — сбросить токен и повторить один раз.
-        if (!(e instanceof NeedsAuthError) || !deps.invalidateToken) throw e;
-        deps.invalidateToken();
-        result = await syncDrive();
-      }
+      if (!ok) throw new Error('Данные постоянно меняются на другом устройстве — повторю позже');
     } catch (e) {
-      if (e instanceof NeedsAuthError) setState({ status: 'needs-auth' }, true);
-      else if (isOfflineError(e)) setState({ status: 'offline' }, true);
+      if (isOfflineError(e)) setState({ status: 'offline' }, true);
       else setState({ status: 'error', error: errorMessage(e) });
       return;
     }
@@ -278,37 +273,11 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     await store.setMeta(META_LAST_SYNC, at);
     const errors: string[] = [];
 
-    // Email аккаунта — один раз.
-    if (!state.account) {
-      try {
-        let account = await store.getMeta<string>(META_ACCOUNT);
-        if (!account) {
-          account = await drive.getAccountEmail();
-          if (account) await store.setMeta(META_ACCOUNT, account);
-        }
-        if (account) {
-          deps.rememberAccount?.(account);
-          setState({ account });
-        }
-      } catch {
-        /* не критично */
-      }
-    }
-
-    // Бэкап раз в сутки (по локальной дате устройства).
-    const today = localDate(now());
-    try {
-      if ((await store.getMeta<string>(META_LAST_BACKUP)) !== today) {
-        await drive.writeDailyBackup(result, today);
-        await store.setMeta(META_LAST_BACKUP, today);
-      }
-    } catch (e) {
-      errors.push('Бэкап: ' + errorMessage(e));
-    }
+    await refreshAccount(url, errors);
 
     for (const h of hooks) {
       try {
-        await h(getToken);
+        await h(client);
       } catch (e) {
         errors.push('Календарь: ' + errorMessage(e));
       }
@@ -338,16 +307,18 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       cleanups = [];
       if (env.addWindowListener) {
         cleanups.push(env.addWindowListener('online', autoSync));
-        cleanups.push(env.addWindowListener('offline', () => setState({ status: 'offline' })));
+        cleanups.push(
+          env.addWindowListener('offline', () => client.configured() && setState({ status: 'offline' })),
+        );
       }
       if (env.addVisibilityListener) {
         cleanups.push(env.addVisibilityListener((visible) => visible && autoSync()));
       }
-      const unAuth = (deps.onAuthChange ?? (() => () => {}))(() => {
-        setState({ status: idleStatus() }, true);
+      const unConn = (deps.onConnectionChange ?? (() => () => {}))(() => {
+        setState({ status: idleStatus(), account: undefined }, true);
         void engine.syncNow();
       });
-      cleanups.push(unAuth);
+      cleanups.push(unConn);
       intervalTimer = setInterval(() => {
         if (isOnline()) autoSync();
       }, intervalMs);
@@ -404,17 +375,10 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
   return engine;
 }
 
-function localDate(d: Date): string {
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-}
-
-export { DriveHttpError, OfflineError };
+export { OfflineError, ScriptCallError };
 
 export const syncEngine: SyncEngine = createSyncEngine({
   store: defaultStore,
-  auth: defaultAuth,
-  onAuthChange,
-  rememberAccount,
-  invalidateToken,
+  client: scriptClient,
+  onConnectionChange,
 });

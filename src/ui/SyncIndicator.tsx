@@ -1,8 +1,7 @@
-// Индикатор синхронизации в шапке + кнопки «Войти» и «Синхронизировать».
+// Индикатор синхронизации в шапке + кнопки «Подключить Google Drive» и «Синхронизировать».
 import { useEffect, useState } from 'react';
 import type { SyncState } from '../sync/types';
 import { syncEngine } from '../sync/syncEngine';
-import { auth } from '../sync/auth';
 import { errorText } from './util';
 
 export function useSyncState(): SyncState {
@@ -27,7 +26,7 @@ function safeState(): SyncState {
 
 const LABELS: Record<SyncState['status'], { text: string; icon: string }> = {
   disabled: { text: 'Только на устройстве', icon: '◌' },
-  'needs-auth': { text: 'Нужен вход', icon: '⚠' },
+  'needs-auth': { text: 'Нужно подключение', icon: '⚠' }, // больше не выставляется
   offline: { text: 'Нет сети', icon: '⨯' },
   syncing: { text: 'Синхронизация…', icon: '⟳' },
   synced: { text: 'Синхронизировано', icon: '✓' },
@@ -35,7 +34,8 @@ const LABELS: Record<SyncState['status'], { text: string; icon: string }> = {
   error: { text: 'Ошибка синхронизации', icon: '!' },
 };
 
-export function SyncIndicator({ compact }: { compact?: boolean }) {
+/** onConnect — открыть настройки подключения (вкладка «Настройки»). */
+export function SyncIndicator({ compact, onConnect }: { compact?: boolean; onConnect?: () => void }) {
   const s = useSyncState();
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string>();
@@ -57,28 +57,20 @@ export function SyncIndicator({ compact }: { compact?: boolean }) {
     }
   };
 
+  const notConnected = s.status === 'disabled' || s.status === 'needs-auth';
+
   return (
     <div className={`sync sync-${s.status}`} title={title} role="status">
       <span className="sync-icon" aria-hidden>
         {l.icon}
       </span>
       {!compact && <span className="sync-text">{l.text}</span>}
-      {s.status === 'needs-auth' && (
-        <button
-          type="button"
-          className="small primary"
-          disabled={busy}
-          onClick={() =>
-            run(async () => {
-              await auth.signIn();
-              await syncEngine.syncNow();
-            })
-          }
-        >
-          Войти
+      {notConnected && onConnect && (
+        <button type="button" className="small" onClick={onConnect} title="Подключить Google Drive">
+          {compact ? 'Подключить' : 'Подключить Google Drive'}
         </button>
       )}
-      {s.status !== 'disabled' && s.status !== 'needs-auth' && (
+      {!notConnected && (
         <button
           type="button"
           className="small"
