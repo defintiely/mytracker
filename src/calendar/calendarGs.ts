@@ -173,7 +173,7 @@ function handleCalendar_(req) {
 
 /** Свой календарь: по id из свойств; нет, удалён или вдруг основной — создать новый. */
 function wltCalOpen_(req, props, tz) {
-  var name = req.calendarName || 'Съёмки';
+  var name = req.calendarName || 'Трекер';
   var id = props.getProperty(WLT_CAL_ID_PROP_);
   var cal = null;
   if (id) {

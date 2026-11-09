@@ -9,7 +9,7 @@ import type {
   YearMonth,
 } from './types';
 import { DEFAULT_SETTINGS } from './types';
-import { taskTypes, typeDef as typeDefOf, typeHasMoney } from './taskTypes';
+import { defaultTypeId, taskTypes, typeDef as typeDefOf, typeHasMoney } from './taskTypes';
 
 export function newId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
@@ -20,10 +20,14 @@ export function nowIso(): string {
   return new Date().toISOString();
 }
 
-export function newEntry(partial: Partial<Entry> = {}): Entry {
+/**
+ * Новая запись. Тип не задан — тип по умолчанию из настроек; вид не задан — «задача»
+ * для типа с деньгами и «дело» для типа без денег.
+ */
+export function newEntry(partial: Partial<Entry> = {}, settings: Settings = DEFAULT_SETTINGS): Entry {
   const t = nowIso();
-  const type: EntryType = partial.type ?? 'main';
-  const kind: EntryKind = partial.kind ?? (type === 'personal' ? 'event' : 'shoot');
+  const type: EntryType = partial.type ?? defaultTypeId(settings);
+  const kind: EntryKind = partial.kind ?? (typeHasMoney(settings, type) ? 'job' : 'event');
   return {
     id: newId(),
     type,
@@ -31,7 +35,6 @@ export function newEntry(partial: Partial<Entry> = {}): Entry {
     title: '',
     dateTentative: false,
     allDay: !partial.timeStart,
-    media: [],
     currency: 'EUR',
     money: [],
     status: 'booked',
@@ -52,6 +55,42 @@ export function emptyDoc(): TrackerDoc {
   };
 }
 
+/** Поля записей старых версий, которых больше нет в модели. */
+const LEGACY_ENTRY_FIELDS = ['media', 'withEditing'] as const;
+
+/**
+ * Привести запись старой версии к текущей схеме: вид 'shoot' → 'job', поля media/withEditing стираются
+ * (и их метки в fieldUpdatedAt). Запись без изменений возвращается как есть. Идемпотентно.
+ */
+export function normalizeEntry(e: Entry): Entry {
+  const raw = e as Entry & Record<string, unknown>;
+  const fu = raw.fieldUpdatedAt as Record<string, unknown> | undefined;
+  const legacyKind = (raw.kind as string) === 'shoot';
+  const legacyFields = LEGACY_ENTRY_FIELDS.some((k) => k in raw || (fu && k in fu));
+  if (!legacyKind && !legacyFields) return e;
+  const out = { ...raw } as Entry & Record<string, unknown>;
+  if (legacyKind) out.kind = 'job';
+  for (const k of LEGACY_ENTRY_FIELDS) delete out[k];
+  if (fu) {
+    const f = { ...fu };
+    for (const k of LEGACY_ENTRY_FIELDS) delete f[k];
+    out.fieldUpdatedAt = f as Entry['fieldUpdatedAt'];
+  }
+  return out;
+}
+
+/** normalizeEntry для списка; битые элементы (не объекты) оставляются как есть. */
+export function normalizeEntries(list: Entry[]): Entry[] {
+  let changed = false;
+  const out = list.map((e) => {
+    if (typeof e !== 'object' || e === null) return e;
+    const n = normalizeEntry(e);
+    if (n !== e) changed = true;
+    return n;
+  });
+  return changed ? out : list;
+}
+
 /** Производный статус оплаты (для фильтров и значков). */
 export type PayState = 'none' | 'unpaid' | 'partial' | 'intermediary' | 'paid';
 
@@ -59,10 +98,9 @@ export function moneyTotal(parts: MoneyPart[], where?: MoneyPart['where']): numb
   return parts.filter((p) => !where || p.where === where).reduce((s, p) => s + p.amount, 0);
 }
 
-/** settings не передан — «без денег» только встроенный personal. */
-export function payState(e: Pick<Entry, 'amount' | 'money' | 'type'>, settings?: Settings): PayState {
-  const noMoney = settings ? !typeHasMoney(settings, e.type) : e.type === 'personal';
-  if (noMoney || !e.amount) return 'none';
+/** settings не передан — типы по умолчанию. */
+export function payState(e: Pick<Entry, 'amount' | 'money' | 'type'>, settings: Settings = DEFAULT_SETTINGS): PayState {
+  if (!typeHasMoney(settings, e.type) || !e.amount) return 'none';
   const owner = moneyTotal(e.money, 'owner');
   const inter = moneyTotal(e.money, 'intermediary');
   const client = e.amount - owner - inter;
@@ -83,14 +121,11 @@ export interface MonthTotals {
   net: number;
   /** Оборот по каждому типу с деньгами (id типа → сумма). Оборот = сумма byType. */
   byType: Record<string, number>;
-  /** @deprecated Производное: byType.main (для совместимости). */
-  main: number;
-  /** @deprecated Производное: byType.joint (для совместимости). */
-  joint: number;
   received: number;
   atIntermediary: number;
   atClient: number;
-  shoots: number;
+  /** Число задач (вид 'job') с деньгами. */
+  jobs: number;
 }
 
 export function monthTotals(entries: Entry[], month: YearMonth, settings: Settings): MonthTotals {
@@ -100,26 +135,22 @@ export function monthTotals(entries: Entry[], month: YearMonth, settings: Settin
     turnover: 0,
     net: 0,
     byType: {},
-    main: 0,
-    joint: 0,
     received: 0,
     atIntermediary: 0,
     atClient: 0,
-    shoots: 0,
+    jobs: 0,
   };
   for (const e of list) {
     if (!typeHasMoney(settings, e.type)) continue;
     const a = e.amount ?? 0;
     t.turnover += a;
     t.byType[e.type] = (t.byType[e.type] ?? 0) + a;
-    if (e.type === 'main') t.main += a;
-    if (e.type === 'joint') t.joint += a;
     const owner = moneyTotal(e.money, 'owner');
     const inter = moneyTotal(e.money, 'intermediary');
     t.received += owner;
     t.atIntermediary += inter;
     t.atClient += Math.max(0, a - owner - inter);
-    if (e.kind === 'shoot') t.shoots++;
+    if (e.kind === 'job') t.jobs++;
   }
   t.net = Math.round(t.turnover * settings.netFactor * 100) / 100;
   return t;
@@ -133,8 +164,8 @@ export interface TypeAmount {
 }
 
 /**
- * Разбивка оборота по типам с деньгами для показа: встроенные main/joint всегда,
- * свои — если по ним есть сумма или allTypes; плюс суммы по неизвестным/удалённым id.
+ * Разбивка оборота по типам с деньгами для показа: типы, по которым есть сумма (или все с allTypes),
+ * плюс суммы по неизвестным/удалённым id.
  */
 export function turnoverByType(
   settings: Settings,
@@ -147,7 +178,7 @@ export function turnoverByType(
     if (!t.money) continue;
     seen.add(t.id);
     const amount = byType[t.id] ?? 0;
-    if (opts.allTypes || t.builtin || amount !== 0) out.push({ id: t.id, name: t.name, color: t.color, amount });
+    if (opts.allTypes || amount !== 0) out.push({ id: t.id, name: t.name, color: t.color, amount });
   }
   for (const [id, amount] of Object.entries(byType)) {
     if (seen.has(id) || amount === 0) continue;

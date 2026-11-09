@@ -15,6 +15,7 @@ import type { AfterSyncHook, Conflict, SyncState } from './types';
 import type { Settings, TrackerDoc } from '../model/types';
 import { DEFAULT_SETTINGS } from '../model/types';
 import { normalizeTaskTypes } from '../model/taskTypes';
+import { normalizeEntries } from '../model/entry';
 import { store as defaultStore, type TrackerStore } from '../store/store';
 
 /** Синхронизатор store ↔ tracker.json в Drive (через Apps Script). */
@@ -85,7 +86,11 @@ function defaultIsOnline(): boolean {
   return typeof navigator === 'undefined' || navigator.onLine !== false;
 }
 
-/** Привести документ из Drive к текущей схеме (недостающие поля — по умолчанию). */
+/**
+ * Привести документ из Drive к текущей схеме (недостающие поля — по умолчанию). Записи старых версий:
+ * вид 'shoot' → 'job', поля media/withEditing стираются; типы задач со старым флагом builtin или без
+ * taskTypes → обычные типы (normalizeTaskTypes).
+ */
 export function normalizeDoc(raw: unknown): TrackerDoc {
   const d = (raw ?? {}) as Partial<TrackerDoc>;
   if (typeof d.schemaVersion === 'number' && d.schemaVersion > 1) {
@@ -94,13 +99,12 @@ export function normalizeDoc(raw: unknown): TrackerDoc {
   const s = (d.settings ?? {}) as Partial<Settings>;
   return {
     schemaVersion: 1,
-    entries: Array.isArray(d.entries) ? d.entries : [],
+    entries: Array.isArray(d.entries) ? normalizeEntries(d.entries) : [],
     contacts: Array.isArray(d.contacts) ? d.contacts : [],
     sources: Array.isArray(d.sources) ? d.sources : [],
     settings: {
       ...structuredClone(DEFAULT_SETTINGS),
       ...s,
-      // Документ старой версии без taskTypes — дополняем из typeColors и названий по умолчанию.
       taskTypes: normalizeTaskTypes(s),
       calendar: { ...DEFAULT_SETTINGS.calendar, ...(s.calendar ?? {}) },
     },

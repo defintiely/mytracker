@@ -6,7 +6,7 @@ import { createGsRunner, type GsRunner } from './gsFakes';
 const TZ = 'Europe/Athens'; // ноябрь — UTC+2
 
 function timed(entryId: string, start: string, end: string, p: Partial<DesiredEvent> = {}): DesiredEvent {
-  return { entryId, hash: 'h-' + entryId, title: 'Съёмка ' + entryId, allDay: false, start, end, reminders: [1440, 120], ...p };
+  return { entryId, hash: 'h-' + entryId, title: 'Задача ' + entryId, allDay: false, start, end, reminders: [1440, 120], ...p };
 }
 
 function allDay(entryId: string, start: string, endExclusive: string, p: Partial<DesiredEvent> = {}): DesiredEvent {
@@ -15,7 +15,7 @@ function allDay(entryId: string, start: string, endExclusive: string, p: Partial
 
 let gs: GsRunner;
 
-function call(events: DesiredEvent[], calendarName = 'Съёмки') {
+function call(events: DesiredEvent[], calendarName = 'Трекер') {
   return gs.handleCalendar({ calendarName, timeZone: TZ, events, windowStart: '2026-09-10', windowEnd: '2028-11-09' });
 }
 
@@ -37,7 +37,7 @@ describe('CALENDAR_GS', () => {
   it('первая выгрузка создаёт календарь и события с полями, напоминаниями и тегами', () => {
     const res = call([
       timed('a', '2026-11-20T10:00', '2026-11-20T12:00', {
-        description: 'Категория: свадьба',
+        description: 'Категория: встреча',
         location: 'Old Town',
         colorId: '9',
       }),
@@ -48,13 +48,13 @@ describe('CALENDAR_GS', () => {
     expect(res.stats).toEqual({ created: 2, updated: 0, deleted: 0 });
     const cal = gs.calendar();
     expect(res.calendarId).toBe(cal.id);
-    expect(cal.name).toBe('Съёмки');
+    expect(cal.name).toBe('Трекер');
     expect(cal.timeZone).toBe(TZ);
     expect(gs.primary.events).toHaveLength(0); // основной календарь не тронут
 
     const a = cal.byEntry('a')!;
-    expect(a.title).toBe('Съёмка a');
-    expect(a.description).toBe('Категория: свадьба');
+    expect(a.title).toBe('Задача a');
+    expect(a.description).toBe('Категория: встреча');
     expect(a.location).toBe('Old Town');
     expect(a.color).toBe('9');
     expect(a.reminders).toEqual([1440, 120]);
@@ -201,19 +201,19 @@ describe('CALENDAR_GS', () => {
   it('adoptEventId: чужое событие становится событием записи вместо дубля', () => {
     call([]);
     const cal = gs.calendar();
-    const f = cal.userCreateTimed('Фотосессия', '2026-12-01T11:00', '2026-12-01T13:00', TZ);
+    const f = cal.userCreateTimed('Консультация', '2026-12-01T11:00', '2026-12-01T13:00', TZ);
     const res = gs.handleCalendar({
-      calendarName: 'Съёмки',
+      calendarName: 'Трекер',
       timeZone: TZ,
       windowStart: '2026-09-10',
       windowEnd: '2028-11-09',
-      events: [{ ...timed('x', '2026-12-01T11:00', '2026-12-01T13:00', { title: '📷 Фотосессия' }), adoptEventId: f.id }],
+      events: [{ ...timed('x', '2026-12-01T11:00', '2026-12-01T13:00', { title: 'Консультация Анны' }), adoptEventId: f.id }],
     });
     expect(res.stats).toEqual({ created: 0, updated: 1, deleted: 0 });
     expect(res.foreign).toEqual([]);
     expect(cal.live()).toHaveLength(1);
     expect(f.tags.wltEntry).toBe('x');
-    expect(f.title).toBe('📷 Фотосессия');
+    expect(f.title).toBe('Консультация Анны');
   });
 
   it('all-day на несколько дней: конец исключительный, перенос распознаётся', () => {

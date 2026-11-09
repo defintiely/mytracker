@@ -102,9 +102,9 @@ describe('syncEngine: два устройства через один скрип
     const eb = engineFor(B, script);
 
     // A создаёт записи и первым синхронизируется — создаётся tracker.json.
-    const shoot = newEntry({ title: 'Свадьба', amount: 500 });
-    A.upsertEntry(shoot);
-    A.upsertEntry(newEntry({ title: 'Ретушь', kind: 'work', amount: 100 }));
+    const job = newEntry({ title: 'Проект сайта', amount: 500 });
+    A.upsertEntry(job);
+    A.upsertEntry(newEntry({ title: 'Поддержка', kind: 'work', amount: 100 }));
     expect(ea.getState().status).toBe('dirty');
     await ea.syncNow();
     expect(ea.getState().status).toBe('synced');
@@ -120,37 +120,37 @@ describe('syncEngine: два устройства через один скрип
     expect(script.remoteDoc().entries).toHaveLength(3);
 
     // Параллельные правки разных полей одной записи.
-    A.updateEntry(shoot.id, { location: 'Порт' });
+    A.updateEntry(job.id, { location: 'Порт' });
     await new Promise((r) => setTimeout(r, 5));
-    B.updateEntry(shoot.id, { status: 'shot' });
+    B.updateEntry(job.id, { status: 'shot' });
     await eb.syncNow();
     await ea.syncNow();
     await eb.syncNow();
 
     expect(same(A.getDoc(), B.getDoc())).toBe(true);
     expect(same(A.getDoc(), script.remoteDoc())).toBe(true);
-    const merged = A.getDoc().entries.find((e) => e.id === shoot.id)!;
+    const merged = A.getDoc().entries.find((e) => e.id === job.id)!;
     expect(merged.location).toBe('Порт');
     expect(merged.status).toBe('shot');
     expect(await ea.getConflicts()).toEqual([]);
 
     // Одно поле — побеждает поздняя правка, конфликт в журнале.
-    A.updateEntry(shoot.id, { amount: 550 });
+    A.updateEntry(job.id, { amount: 550 });
     await new Promise((r) => setTimeout(r, 5));
-    B.updateEntry(shoot.id, { amount: 600 });
+    B.updateEntry(job.id, { amount: 600 });
     await ea.syncNow();
     await eb.syncNow();
     await ea.syncNow();
     expect(same(A.getDoc(), B.getDoc())).toBe(true);
-    expect(A.getDoc().entries.find((e) => e.id === shoot.id)!.amount).toBe(600);
+    expect(A.getDoc().entries.find((e) => e.id === job.id)!.amount).toBe(600);
     const conflicts = await eb.getConflicts();
-    expect(conflicts[0]).toMatchObject({ id: shoot.id, field: 'amount', lostValue: 550, keptValue: 600 });
+    expect(conflicts[0]).toMatchObject({ id: job.id, field: 'amount', lostValue: 550, keptValue: 600 });
 
     // Удаление на B доходит до A.
-    B.deleteEntry(shoot.id);
+    B.deleteEntry(job.id);
     await eb.syncNow();
     await ea.syncNow();
-    expect(A.getDoc().entries.find((e) => e.id === shoot.id)!.deleted).toBe(true);
+    expect(A.getDoc().entries.find((e) => e.id === job.id)!.deleted).toBe(true);
     expect(same(A.getDoc(), B.getDoc())).toBe(true);
 
     // Base сохранён и равен документу в Drive.

@@ -1,9 +1,9 @@
-// Мастер импорта .ods (SPEC §9): файл → сопоставление «цвет → тип» → проверка распознанного → импорт.
+// Мастер импорта .ods (SPEC §9): файл → типы (для строк с суммой / без суммы и «цвет → тип») → проверка → импорт.
 import { useMemo, useState } from 'react';
 import type { Entry, EntryStatus, Source, TrackerDoc } from '../model/types';
 import { KIND_LABELS, STATUS_LABELS } from '../model/types';
 import { formatEUR, monthLabel } from '../model/entry';
-import { taskTypes, typeColor, typeHasMoney, typeName, typeOptions } from '../model/taskTypes';
+import { defaultNoMoneyTypeId, defaultTypeId, taskTypes, typeColor, typeHasMoney, typeOptions } from '../model/taskTypes';
 import type { ColorRole, ImportOptions, ImportResult, ImportedRow } from '../ods/types';
 import { importOds } from '../ods/importOds';
 import { store } from '../store/store';
@@ -37,13 +37,17 @@ export function ImportWizard() {
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<string>();
 
+  const [moneyTypeId, setMoneyTypeId] = useState(() => defaultTypeId(doc.settings));
+  const [noMoneyTypeId, setNoMoneyTypeId] = useState(() => defaultNoMoneyTypeId(doc.settings));
+
   const baseOpts = (): ImportOptions => ({
     existingSources: doc.sources,
     existingContacts: doc.contacts,
     existingOriginKeys: originKeys(doc),
-    noMoneyTypes: taskTypes(doc.settings)
-      .filter((t) => !t.money)
-      .map((t) => t.id),
+    taskTypes: doc.settings.taskTypes,
+    categories: doc.settings.categories,
+    moneyTypeId,
+    noMoneyTypeId,
   });
 
   const reset = () => {
@@ -76,10 +80,9 @@ export function ImportWizard() {
       setFileName(f.name);
       const r = importOds(bytes, baseOpts());
       setFirst(r);
-      if (r.colors.length) {
-        setColorMap(Object.fromEntries(r.colors.map((c) => [c.color, KNOWN_COLORS[c.color.toLowerCase()] ?? c.suggested ?? ''])));
-        setStep('colors');
-      } else toReview(r);
+      setColorMap(Object.fromEntries(r.colors.map((c) => [c.color, ''])));
+      // Шаг «типы» показывается всегда: там же выбираются типы для строк без цвета.
+      setStep('colors');
     } catch (e) {
       setErr('Не удалось разобрать файл: ' + errorText(e));
     } finally {
@@ -143,7 +146,7 @@ export function ImportWizard() {
     <div className="wizard">
       <ol className="wizard-steps">
         <li className={step === 'file' ? 'on' : ''}>Файл</li>
-        <li className={step === 'colors' ? 'on' : ''}>Цвета → типы</li>
+        <li className={step === 'colors' ? 'on' : ''}>Типы</li>
         <li className={step === 'review' ? 'on' : ''}>Проверка</li>
       </ol>
       {err && <div className="hint warn">{err}</div>}
@@ -173,9 +176,37 @@ export function ImportWizard() {
       {step === 'colors' && first && (
         <div>
           <p className="hint">
-            Файл «{fileName}». Цвет фона строки в старом файле обозначал тип. Проверьте сопоставление: цветов может быть
-            больше, чем типов, — лишний цвет можно оставить «по тексту».
+            Файл «{fileName}». Строки без цвета (и цвета «по тексту») получают тип по сумме: есть сумма или признаки
+            работы — один тип, нет — другой.
           </p>
+          <div className="grid2">
+            <div className="field">
+              <label htmlFor="iw-money">Строки с суммой → тип</label>
+              <select id="iw-money" value={moneyTypeId} onChange={(e) => setMoneyTypeId(e.target.value)}>
+                {taskTypes(doc.settings).map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="iw-nomoney">Строки без суммы → тип</label>
+              <select id="iw-nomoney" value={noMoneyTypeId} onChange={(e) => setNoMoneyTypeId(e.target.value)}>
+                {taskTypes(doc.settings).map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          {first.colors.length > 0 && (
+            <p className="hint">
+              Если цвет фона строки в файле обозначал тип — сопоставьте цвета с типами. Цветов может быть больше, чем
+              типов: лишний цвет можно оставить «по тексту».
+            </p>
+          )}
           <div className="color-map">
             {first.colors.map((c) => (
               <div className="color-row" key={c.color}>
@@ -183,9 +214,7 @@ export function ImportWizard() {
                 <div className="color-info">
                   <div>
                     <b>{c.count}</b> строк · <code>{c.color}</code>
-                    {c.suggested && (
-                      <span className="muted small"> · предложено: {typeName(doc.settings, c.suggested)}</span>
-                    )}
+                    <span className="muted small"> · с суммой или признаками работы: {c.withMoney}</span>
                   </div>
                   <ul className="samples">
                     {c.samples.slice(0, 5).map((s, i) => (
@@ -235,7 +264,7 @@ export function ImportWizard() {
           setShown={setShown}
           patchRow={patchRow}
           bulk={bulk}
-          onBack={() => (first?.colors.length ? setStep('colors') : reset())}
+          onBack={() => (first ? setStep('colors') : reset())}
           onImport={doImport}
         />
       )}
@@ -247,14 +276,6 @@ export function ImportWizard() {
  * Старые записи: в файле часто нет пометки «оплачено», и импорт считает деньги «у клиента».
  * Одним действием: всё, что раньше выбранной даты, — деньги получены, запись закрыта.
  */
-/** Значения цветов исходного трекера по умолчанию (меняются на экране сопоставления). */
-const KNOWN_COLORS: Record<string, ColorRole> = {
-  '#00ff00': 'personal', // зелёный — личные дела
-  '#00ffff': 'main', // голубой — ретушь и обработка
-  '#ffff00': 'main', // жёлтый — основная работа
-  '#ff0000': 'important', // красный — пометка «важно», не тип
-};
-
 function SettleBefore(props: { rows: ImportedRow[]; patchRow: (i: number, p: Partial<Entry>) => void }) {
   const [before, setBefore] = useState(() => {
     const d = new Date();

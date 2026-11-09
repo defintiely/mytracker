@@ -19,18 +19,18 @@ function sample(): Uint8Array {
       {
         name: 'ноябрь',
         rows: [
-          row({ text: '1.11 Студия', style: 'Y' }, '9.00 утра', 'день рождения', cur(150), 'Анна 99000001', '', '', 'оплачено', { type: 'float', value: 1, text: '1' }, 'инв'),
-          row({ text: 'ретушь', style: 'C' }, '', '', cur(200)),
-          row('5.11 видео с петей', '', '', cur(100), '', '', '', '', 'у Пети'),
+          row({ text: '1.11 Студия', style: 'Y' }, '9.00 утра', 'консультация', cur(150), 'Анна 99000001', '', '', 'оплачено', { type: 'float', value: 1, text: '1' }, 'инв'),
+          row({ text: 'поддержка сайта', style: 'C' }, '', '', cur(200)),
+          row('5.11 ремонт с петей', '', '', cur(100), '', '', '', '', 'у Пети'),
           row({ text: '7.11 ветеринар', style: 'G' }, '12.00'),
           ...totals(450, 5),
-          row('интервью по одному'),
+          row('звонки по одному'),
         ],
       },
       { name: 'Sheet3', rows: [] },
       {
         name: 'Декабрь',
-        rows: [row('3.12 др', '', '', cur(100), 'Аня +4499000001'), ...totals(999, 2)],
+        rows: [row('3.12 встреча', '', '', cur(100), 'Аня +4499000001'), ...totals(999, 2)],
       },
       {
         name: 'январь  2023',
@@ -65,27 +65,51 @@ describe('importOds на синтетическом файле', () => {
   const res = importOds(data, { today: '2026-11-09' });
   const bySheet = (s: string) => res.rows.filter((r) => r.entry.origin!.sheet === s);
 
-  test('строки ноября: съёмка, ретушь, посредник, личное, заметка под итогом', () => {
+  test('строки ноября: задача, работа без даты, посредник, дело без денег, заметка под итогом', () => {
     const nov = bySheet('ноябрь').map((r) => r.entry);
-    expect(nov.map((e) => e.kind)).toEqual(['shoot', 'work', 'shoot', 'event', 'note']);
-    const [shoot, retouch, joint, vet, note] = nov;
-    expect(shoot).toMatchObject({
+    expect(nov.map((e) => e.kind)).toEqual(['job', 'work', 'job', 'event', 'note']);
+    const [job, support, viaPetya, vet, note] = nov;
+    expect(job).toMatchObject({
       date: '2022-11-01',
       timeStart: '09:00',
       amount: 150,
       money: [{ amount: 150, where: 'owner' }],
       invoiceNo: '1',
-      category: 'день рождения',
+      category: 'консультация',
       status: 'done',
       type: 'main',
       origin: { sheet: 'ноябрь', row: 1 },
     });
-    expect(retouch).toMatchObject({ accountingMonth: '2022-11', amount: 200, category: 'ретушь' });
-    expect(joint.type).toBe('joint');
-    expect(joint.money[0]).toMatchObject({ where: 'intermediary', amount: 100 });
-    expect(joint.money[0].holderId).toBe(joint.sourceId);
+    expect(support).toMatchObject({ accountingMonth: '2022-11', amount: 200, category: 'поддержка', type: 'main' });
+    // Посредник ставит источник и деньги у посредника, но тип не меняет.
+    expect(viaPetya.type).toBe('main');
+    expect(viaPetya.money[0]).toMatchObject({ where: 'intermediary', amount: 100 });
+    expect(viaPetya.money[0].holderId).toBe(viaPetya.sourceId);
     expect(vet).toMatchObject({ type: 'personal', timeStart: '12:00', money: [] });
-    expect(note).toMatchObject({ title: 'интервью по одному', accountingMonth: '2022-11' });
+    expect(note).toMatchObject({ title: 'звонки по одному', accountingMonth: '2022-11' });
+    for (const e of nov) {
+      expect('media' in e).toBe(false);
+      expect('withEditing' in e).toBe(false);
+    }
+  });
+
+  test('типы для строк без цвета: «с суммой → тип», «без суммы → тип»', () => {
+    const r = importOds(data, { today: '2026-11-09', moneyTypeId: 'joint', noMoneyTypeId: 'fam' });
+    const nov = r.rows.filter((x) => x.entry.origin!.sheet === 'ноябрь').map((x) => x.entry);
+    expect(nov.map((e) => e.type)).toEqual(['joint', 'joint', 'joint', 'fam', 'fam']);
+  });
+
+  test('типы по умолчанию берутся из taskTypes документа', () => {
+    const r = importOds(data, {
+      today: '2026-11-09',
+      taskTypes: [
+        { id: 'main', name: 'Работа', color: '#1', money: true, deleted: true },
+        { id: 'edu', name: 'Обучение', color: '#2', money: true },
+        { id: 'fam', name: 'Семья', color: '#3', money: false },
+      ],
+    });
+    const nov = r.rows.filter((x) => x.entry.origin!.sheet === 'ноябрь').map((x) => x.entry);
+    expect(nov.map((e) => e.type)).toEqual(['edu', 'edu', 'edu', 'fam', 'fam']);
   });
 
   test('сверка с SUM: ноябрь сошёлся, декабрь — нет', () => {
@@ -111,11 +135,11 @@ describe('importOds на синтетическом файле', () => {
     expect(res.sources[0].aliases).toEqual(expect.arrayContaining(['петя', 'пети', 'петей']));
   });
 
-  test('цвета: статистика и предложенный тип', () => {
+  test('цвета: статистика и число строк с деньгами', () => {
     const map = Object.fromEntries(res.colors.map((c) => [c.color, c]));
-    expect(map['#ffff00']).toMatchObject({ count: 1, suggested: 'main' });
-    expect(map['#00ff00']).toMatchObject({ count: 1, suggested: 'personal' });
-    expect(map['#00ffff'].samples[0]).toContain('ретушь');
+    expect(map['#ffff00']).toMatchObject({ count: 1, withMoney: 1 });
+    expect(map['#00ff00']).toMatchObject({ count: 1, withMoney: 0 });
+    expect(map['#00ffff'].samples[0]).toContain('поддержка');
   });
 
   test('colorMap задаёт тип', () => {
@@ -123,7 +147,7 @@ describe('importOds на синтетическом файле', () => {
     expect(r.rows[0].entry.type).toBe('joint');
   });
 
-  test('colorMap на свой тип: с деньгами — как работа, без денег — как личное', () => {
+  test('colorMap на свой тип: флаг money из taskTypes решает, заводить ли деньги', () => {
     const withMoney = importOds(data, { today: '2026-11-09', colorMap: { '#ffff00': 'edu' } });
     const row = withMoney.rows[0].entry;
     expect(row.type).toBe('edu');
@@ -131,14 +155,17 @@ describe('importOds на синтетическом файле', () => {
     const noMoney = importOds(data, {
       today: '2026-11-09',
       colorMap: { '#ffff00': 'fam' },
-      noMoneyTypes: ['personal', 'fam'],
+      taskTypes: [
+        { id: 'main', name: 'Работа', color: '#1', money: true },
+        { id: 'fam', name: 'Семья', color: '#3', money: false },
+      ],
     });
     const r = noMoney.rows[0];
     expect(r.entry.type).toBe('fam');
     expect(r.entry.sourceId).toBeUndefined();
     expect(r.entry.category).toBeUndefined();
-    expect(r.issues).toContain('Личное дело с суммой');
-    expect(withMoney.rows[0].issues).not.toContain('Личное дело с суммой');
+    expect(r.issues).toContain('Дело без денег с суммой');
+    expect(withMoney.rows[0].issues).not.toContain('Дело без денег с суммой');
   });
 
   test('повторный импорт не дублирует', () => {
@@ -182,7 +209,7 @@ describe.skipIf(!hasReal)('реальный файл', () => {
   test('деньги согласованы, у каждой записи origin', () => {
     for (const { entry: e } of res.rows) {
       expect(e.origin?.raw).toBeTruthy();
-      if (e.amount !== undefined && e.amount !== 0 && e.type !== 'personal') {
+      if (e.amount !== undefined && e.amount !== 0 && e.money.length) {
         const sum = e.money.reduce((s, m) => s + m.amount, 0);
         expect(Math.abs(sum - e.amount), e.origin!.raw).toBeLessThan(0.005);
       }
@@ -193,7 +220,7 @@ describe.skipIf(!hasReal)('реальный файл', () => {
     console.log(
       `Импорт: записей ${res.rows.length}, контактов ${res.contacts.length}, источников ${res.sources.length}, ` +
         `пропущено ${res.skipped.length}, low ${res.rows.filter((r) => r.confidence === 'low').length}, ` +
-        `цвета ${res.colors.map((c) => `${c.color}×${c.count}→${c.suggested}`).join(', ')}`,
+        `цвета ${res.colors.map((c) => `${c.color}×${c.count} (с деньгами ${c.withMoney})`).join(', ')}`,
     );
   });
 

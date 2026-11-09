@@ -3,6 +3,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import type { Entry } from './model/types';
 import { newEntry } from './model/entry';
+import { store } from './store/store';
 import { UiContext, useIsMobile, type UiApi } from './ui/common';
 import { SyncIndicator } from './ui/SyncIndicator';
 import { QuickAdd } from './ui/QuickAdd';
@@ -50,7 +51,7 @@ export function App({ storageError }: { storageError?: string }) {
   const ui = useMemo<UiApi>(
     () => ({
       openEntry: (id) => setCard({ id }),
-      createEntry: (partial) => setCard({ draft: newEntry(partial) }),
+      createEntry: (partial) => setCard({ draft: newEntry(partial, store.getDoc().settings) }),
       openMoney: (id) => setMoneyId(id),
     }),
     [],
@@ -63,7 +64,7 @@ export function App({ storageError }: { storageError?: string }) {
       <div className={'app' + (mobile ? ' is-mobile' : ' is-desktop')}>
         {!mobile && (
           <nav className="sidenav" aria-label="Разделы">
-            <div className="brand">Трекер съёмок</div>
+            <div className="brand">Трекер работы</div>
             {TABS.map((t) => (
               <button
                 type="button"

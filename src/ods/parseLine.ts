@@ -1,6 +1,9 @@
-// Парсер строки: быстрый ввод «12.12 спектакль 11-12 200 от Пети» и общие куски разбора для импорта .ods.
-import type { Contact, EntryKind, EntryStatus, EntryType, ISODate, Media, MoneyPart, Source, YearMonth } from '../model/types';
-import { DEFAULT_CATEGORIES } from '../model/types';
+// Парсер строки: быстрый ввод «12.12 встреча 11-12 200 от Пети» и общие куски разбора для импорта .ods.
+// Тип записи парсер не выбирает: он отдаёт только признак денег, а тип подставляет вызывающий
+// (тип по умолчанию / тип для дел без денег из настроек).
+import type { Contact, EntryKind, EntryStatus, ISODate, MoneyPart, Source, YearMonth } from '../model/types';
+import { DEFAULT_CATEGORIES, DEFAULT_SETTINGS } from '../model/types';
+import { defaultNoMoneyTypeId, defaultTypeId } from '../model/taskTypes';
 import type { ParseContext, ParsedLine } from './types';
 
 // ───────────────────────── общие помощники ─────────────────────────
@@ -703,61 +706,47 @@ export function buildMoney(amount: number | undefined, pay: PaymentInfo, holderI
   return [part(amount, 'client')];
 }
 
-// ───────────────────────── категория, фото/видео ─────────────────────────
+// ───────────────────────── категория ─────────────────────────
 
-const CATEGORY_SYNONYMS: [RegExp, string][] = [
-  [re(`${B}(дет\\p{L}*|дест\\p{L}*|дес\\p{L}*)\\s+(др|д\\.р\\.?|день\\s+рожд\\p{L}*|праздник\\p{L}*)${E}|kids\\s+party`), 'детский день рождения'],
-  [re(`${B}(др|д\\.р\\.?|день\\s+рожд\\p{L}*|дня\\s+рожд\\p{L}*|birthday|юбилей|именин\\p{L}*)${E}`), 'день рождения'],
-  [re(`${B}(свадьб\\p{L}*|свадеб\\p{L}*|wedding|weding|венчани\\p{L}*)`), 'свадьба'],
-  [re(`${B}(крестин\\p{L}*|крещени\\p{L}*)`), 'крестины'],
-  [re(`${B}(корпоратив\\p{L}*|стафф\\s*парти|staff\\s+party|хакатон\\p{L}*|тимбилдинг)`), 'корпоратив'],
-  [re(`${B}(семейн\\p{L}*|family)`), 'семейная'],
-  [re(`${B}(портрет\\p{L}*)`), 'портреты'],
-  [re(`${B}(интерьер\\p{L}*|квартир\\p{L}*|недвижк\\p{L}*)`), 'интерьер'],
-  [re(`${B}(контент\\p{L}*|рилс\\p{L}*|сторис|reels)`), 'контент'],
-  [re(`${B}(школ\\p{L}*|выпускн\\p{L}*|последний\\s+звонок|утренник\\p{L}*|детск\\p{L}*\\s+сад\\p{L}*|садик\\p{L}*|пифагор\\p{L}*|neo\\s*study|морфосис)`), 'школа'],
-  [re(`${B}(прессвол\\p{L}*|пресс-вол\\p{L}*|press\\s*wall)`), 'прессволл'],
-  [re(`${B}(спектакл\\p{L}*|театр\\p{L}*)`), 'спектакль'],
-  [re(`${B}(репортаж\\p{L}*|конференц\\p{L}*|конф|трансляц\\p{L}*|выставк\\p{L}*|открыти\\p{L}*)${E}`), 'репортаж'],
-  [re(`${B}(ретушь|ретуш\\p{L}*|обработк\\p{L}*|обр|слайдшоу|монтаж\\p{L}*)${E}`), 'ретушь'],
-];
+const ESCAPE_RE = /[.*+?^${}()|[\]\\]/g;
+const categoryReCache = new Map<string, RegExp>();
 
-const NO_EDITING_RE = re(`${B}без\\s+(обработки|ретуши)${E}`);
-
-export function findCategory(text: string, categories: string[] = DEFAULT_CATEGORIES): string | undefined {
-  const t = text.replace(NO_EDITING_RE, ' ');
-  for (const [r, cat] of CATEGORY_SYNONYMS) if (categories.includes(cat) && r.test(t)) return cat;
-  // Пользовательские категории справочника — точным словом.
-  for (const c of categories) {
-    if (c.length >= 3 && re(`${B}${c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}${E}`).test(t)) return c;
+/**
+ * Шаблон категории: каждое слово — по основе, чтобы ловились падежные формы
+ * («консультация» → консультации, консультацию; «поддержка» → поддержку). Короткие слова — точно.
+ */
+function categoryRe(cat: string): RegExp {
+  let r = categoryReCache.get(cat);
+  if (!r) {
+    const words = cat.trim().toLowerCase().split(/\s+/).map((w) => {
+      const stem = w.replace(/[аеёиоуыэюяйь]+$/u, '');
+      return stem.length >= 5 ? stem.replace(ESCAPE_RE, '\\$&') + '\\p{L}*' : w.replace(ESCAPE_RE, '\\$&');
+    });
+    r = re(`${B}${words.join('\\s+')}${E}`);
+    categoryReCache.set(cat, r);
   }
+  return r;
+}
+
+/** Категория — по совпадению с категориями из настроек (длинные названия проверяются первыми). */
+export function findCategory(text: string, categories: string[] = DEFAULT_CATEGORIES): string | undefined {
+  const list = categories.filter((c) => c.trim().length >= 3).sort((a, b) => b.length - a.length);
+  for (const c of list) if (categoryRe(c).test(text)) return c;
   return undefined;
 }
 
-export function findMedia(text: string): Media[] {
-  const t = text.replace(NO_EDITING_RE, ' ');
-  const out: Media[] = [];
-  if (re(`${B}(фото\\p{L}*|photo\\p{L}*|чб|портрет\\p{L}*)`).test(t)) out.push('photo');
-  if (re(`${B}(видео\\p{L}*|video\\p{L}*|клип\\p{L}*|монтаж\\p{L}*|рилс\\p{L}*|reels|трансляц\\p{L}*|сторис)`).test(t)) out.push('video');
-  return out;
-}
-
-export function findWithEditing(text: string): boolean | undefined {
-  return NO_EDITING_RE.test(text) ? false : undefined;
-}
-
-// ───────────────────────── вид, тип, статус ─────────────────────────
+// ───────────────────────── вид, признак денег, статус ─────────────────────────
 
 export const PAYMENT_WORDS_RE = re(
   `${B}(предо?п?оплат\\p{L}*|предпоплат\\p{L}*|сертификат\\p{L}*|комисси\\p{L}*|booking\\s+fee|оплата\\s+за|опалата\\s+за)`,
 );
-export const WORK_WORDS_RE = re(`${B}(ретушь|ретуш\\p{L}*|обработк\\p{L}*|обр|слайдшоу|монтаж\\p{L}*|правки)${E}`);
-const SHOOT_WORDS_RE = re(
-  `${B}(съ[её]мк\\p{L}*|съ[её]мочн\\p{L}*|снимать|поснимать|фото\\p{L}*|видео\\p{L}*|клип\\p{L}*|корпоратив\\p{L}*|свадьб\\p{L}*|wedding|крестин\\p{L}*|инв\\p{L}*|ивент\\p{L}*|event|интервью|трансляц\\p{L}*|выставк\\p{L}*|рилс\\p{L}*|контент\\p{L}*|прессвол\\p{L}*|фотозон\\p{L}*|репортаж\\p{L}*|хакатон\\p{L}*|show|party|пати)`,
+/** Общие слова работы: строка без суммы с ними — всё равно работа, а не личное дело. */
+const WORK_SIGN_WORDS_RE = re(
+  `${B}(заказ\\p{L}*|клиент\\p{L}*|проект\\p{L}*|договор\\p{L}*|контракт\\p{L}*|дедлайн\\p{L}*|order|client|project|deadline)`,
 );
-/** Явно личное: врачи, быт, репетиции. */
+/** Явно личное: врачи, быт, отдых. */
 const PERSONAL_WORDS_RE = re(
-  `${B}(к\\s+рите|рит[аеуы]|психолог\\p{L}*|ветеринар\\p{L}*|ветерин\\p{L}*|эпиляци\\p{L}*|парикмах\\p{L}*|парикмех\\p{L}*|стрижк\\p{L}*|зуб\\p{L}*|стоматолог\\p{L}*|эндокрин\\p{L}*|вр[ао]ч\\p{L}*|доктор\\p{L}*|отпуск\\p{L}*|репетици\\p{L}*|экзамен\\p{L}*|тату|массаж|massage|гости|в\\s+гости|каникулы|паспорт\\p{L}*|документ\\p{L}*|собеседовани\\p{L}*|собрани\\p{L}*|купить|отвезти|ужин|операци\\p{L}*|консультаци\\p{L}*|анализ\\p{L}*|without\\s+food|настолки|горы|выходн\\p{L}*)`,
+  `${B}(к\\s+рите|рит[аеуы]|психолог\\p{L}*|ветеринар\\p{L}*|ветерин\\p{L}*|эпиляци\\p{L}*|парикмах\\p{L}*|парикмех\\p{L}*|стрижк\\p{L}*|зуб\\p{L}*|стоматолог\\p{L}*|эндокрин\\p{L}*|вр[ао]ч\\p{L}*|доктор\\p{L}*|отпуск\\p{L}*|репетици\\p{L}*|экзамен\\p{L}*|тату|массаж|massage|гости|в\\s+гости|каникулы|паспорт\\p{L}*|купить|отвезти|ужин|операци\\p{L}*|анализ\\p{L}*|without\\s+food|настолки|горы|выходн\\p{L}*)`,
 );
 
 export interface ClassifyInput {
@@ -768,51 +757,49 @@ export interface ClassifyInput {
   hasInvoice?: boolean;
   hasPhone?: boolean;
   afterTotal?: boolean;
-  /** Название записи (для признака «обработка»); по умолчанию весь текст. */
-  title?: string;
+  /** Категории из настроек: совпадение с категорией — признак работы. */
+  categories?: string[];
 }
 
 export interface ClassifyResult {
   kind: EntryKind;
-  type: EntryType;
-  /** Тип угадан без опоры (нет суммы и явных признаков). */
+  /**
+   * Признак денег: запись с суммой или признаками работы. Тип выбирает вызывающий:
+   * true → тип по умолчанию, false → тип для дел без денег.
+   */
+  money: boolean;
+  /** Признак угадан без опоры (нет суммы и явных признаков). */
   guessed: boolean;
 }
 
-/** Вид и тип записи по эвристике SPEC §9 (без цвета). */
+/** Вид записи и признак денег по эвристике SPEC §9 (без цвета). */
 export function classify(i: ClassifyInput): ClassifyResult {
-  const t = i.text.replace(NO_EDITING_RE, ' ');
-  // «150 предоплата» внутри строки съёмки — это частичная оплата, а не запись-предоплата.
+  const t = i.text;
+  // «150 предоплата» внутри строки задачи — это частичная оплата, а не запись-предоплата.
   const tp = t.replace(new RegExp(PARTIAL_RE.source, 'giu'), ' ');
   const isPayment = PAYMENT_WORDS_RE.test(tp) || (i.amount !== undefined && i.amount < 0);
-  // Обработка — по названию («срочная обработка»), а не по заметке («доснять… плюс обработка»).
-  const isWork = WORK_WORDS_RE.test((i.title ?? i.text).replace(NO_EDITING_RE, ' '));
   const hasAmount = i.amount !== undefined;
   const personalWords = PERSONAL_WORDS_RE.test(t);
-  // «др» без суммы — чаще чужой праздник, поэтому день рождения здесь не признак работы.
-  const shootWords =
-    SHOOT_WORDS_RE.test(t) ||
-    !!findCategory(t)?.match(/^(детский день рождения|свадьба|крестины|корпоратив|семейная|портреты|интерьер|контент|прессволл|репортаж|ретушь)$/);
   const paidMention = re(`${B}опл[аче]{1,4}н`).test(t);
-  const workSigns = isPayment || isWork || shootWords || paidMention || !!i.hasInvoice;
+  const workSigns =
+    isPayment || paidMention || !!i.hasInvoice || WORK_SIGN_WORDS_RE.test(t) || !!findCategory(t, i.categories ?? DEFAULT_CATEGORIES);
 
-  if (i.afterTotal) return { kind: 'note', type: hasAmount || workSigns ? (i.hasSource ? 'joint' : 'main') : 'personal', guessed: false };
+  if (i.afterTotal) return { kind: 'note', money: hasAmount || workSigns, guessed: false };
 
   if (!hasAmount && (personalWords || !workSigns)) {
-    return { kind: i.hasDate ? 'event' : 'note', type: 'personal', guessed: !personalWords };
+    return { kind: i.hasDate ? 'event' : 'note', money: false, guessed: !personalWords };
   }
-  const type: EntryType = i.hasSource ? 'joint' : 'main';
   let kind: EntryKind;
   if (isPayment) kind = 'payment';
-  else if (isWork) kind = 'work';
-  else if (i.hasDate) kind = 'shoot';
-  else kind = 'work';
-  return { kind, type, guessed: false };
+  else if (i.hasDate) kind = 'job';
+  else kind = 'work'; // без даты — работа, засчитывается в месяц учёта
+  return { kind, money: true, guessed: false };
 }
 
 export function statusFor(p: {
   kind: EntryKind;
-  type: EntryType;
+  /** Тип записи с деньгами. */
+  hasMoney: boolean;
   date?: ISODate;
   dateEnd?: ISODate;
   accountingMonth?: YearMonth;
@@ -831,7 +818,7 @@ export function statusFor(p: {
     if (ref) return 'booked';
     return p.kind === 'work' ? 'editing' : 'booked';
   }
-  if (p.type === 'personal' || !p.amount) return 'done';
+  if (!p.hasMoney || !p.amount) return 'done';
   const owner = p.money.filter((m) => m.where === 'owner').reduce((s, m) => s + m.amount, 0);
   return owner >= p.amount ? 'done' : 'delivered';
 }
@@ -869,7 +856,10 @@ export function findInvoice(text: string): { invoiceNo?: string; mark: boolean; 
 
 // ───────────────────────── быстрый ввод ─────────────────────────
 
-/** Разобрать строку быстрого ввода: «12.12 спектакль 11-12 200 от Пети». */
+/**
+ * Разобрать строку быстрого ввода: «12.12 встреча 11-12 200 от Пети». Тип: запись с суммой или
+ * признаками работы — тип по умолчанию, иначе — тип для дел без денег (из ctx.settings).
+ */
 export function parseQuickLine(text: string, ctx: ParseContext): ParsedLine {
   const issues: string[] = [];
   const today = ctx.today ?? todayIso();
@@ -928,10 +918,9 @@ export function parseQuickLine(text: string, ctx: ParseContext): ParsedLine {
     pay = { ...pay, partialOwner: undefined, partialElsewhere: false, paid: !pay.unpaid };
   }
 
-  const withEditing = findWithEditing(raw);
-  if (withEditing === false) rest = rest.replace(NO_EDITING_RE, ' ');
   const title = cleanText(rest.replace(/\s+[,;]+/g, ' '));
 
+  const categories = ctx.categories ?? DEFAULT_CATEGORIES;
   const amount = am.amount;
   const cls = classify({
     text: raw,
@@ -940,7 +929,10 @@ export function parseQuickLine(text: string, ctx: ParseContext): ParsedLine {
     hasSource: !!src,
     hasInvoice: !!inv.invoiceNo,
     hasPhone: ci.phones.length > 0,
+    categories,
   });
+  const typeSettings = ctx.settings ?? DEFAULT_SETTINGS;
+  const type = cls.money ? defaultTypeId(typeSettings) : defaultNoMoneyTypeId(typeSettings);
 
   const holderId = src?.holder ? src.source?.id : undefined;
   if (src?.holder && !src.source) issues.push(`Посредник «${src.name}» ещё не в справочнике`);
@@ -957,13 +949,12 @@ export function parseQuickLine(text: string, ctx: ParseContext): ParsedLine {
   const tentative = dp.tentative || re(`${B}(под\\s+вопросом|уточнить)${E}`).test(raw);
   const entry: ParsedLine['entry'] = {
     kind: cls.kind,
-    type: cls.type,
+    type,
     title,
     dateTentative: tentative,
     allDay: !times.timeStart,
-    media: findMedia(raw),
     currency: 'EUR',
-    money: cls.type === 'personal' ? [] : money,
+    money: cls.money ? money : [],
     checklist: [],
   };
   if (dp.date) entry.date = dp.date;
@@ -972,16 +963,15 @@ export function parseQuickLine(text: string, ctx: ParseContext): ParsedLine {
   if (times.timeEnd) entry.timeEnd = times.timeEnd;
   if (timeNote) entry.timeNote = timeNote;
   if (ci.mapUrl) entry.mapUrl = ci.mapUrl;
-  const category = cls.type === 'personal' ? undefined : findCategory(raw);
+  const category = cls.money ? findCategory(raw, categories) : undefined;
   if (category) entry.category = category;
-  if (withEditing !== undefined) entry.withEditing = withEditing;
   if (amount !== undefined) entry.amount = amount;
   if (inv.invoiceNo) entry.invoiceNo = inv.invoiceNo;
   if (accountingMonth) entry.accountingMonth = accountingMonth;
-  if (src?.source && cls.type !== 'personal') entry.sourceId = src.source.id;
+  if (src?.source && cls.money) entry.sourceId = src.source.id;
   entry.status = statusFor({
     kind: cls.kind,
-    type: cls.type,
+    hasMoney: cls.money,
     date: dp.date,
     dateEnd: dp.dateEnd,
     accountingMonth,
@@ -994,7 +984,7 @@ export function parseQuickLine(text: string, ctx: ParseContext): ParsedLine {
   if (!dp.date && /^\s*\d/.test(raw) && cls.kind !== 'work' && cls.kind !== 'note') issues.push('Дата не распознана');
   if (dp.otherMonth && dp.date) issues.push('Дата из другого месяца');
 
-  const out: ParsedLine = { entry, issues };
+  const out: ParsedLine = { entry, money: cls.money, issues };
   if (src) out.sourceName = src.name;
   if (ci.phones.length || ci.channels.length) {
     out.contact = { phones: ci.phones, channels: ci.channels };

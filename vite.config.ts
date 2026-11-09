@@ -11,7 +11,7 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['icon.svg'],
       manifest: {
-        name: 'Трекер съёмок',
+        name: 'Трекер работы',
         short_name: 'Трекер',
         lang: 'ru',
         start_url: './',

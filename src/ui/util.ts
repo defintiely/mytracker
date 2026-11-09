@@ -10,7 +10,7 @@ import type {
   Source,
   TrackerDoc,
 } from '../model/types';
-import { STATUS_LABELS, WHERE_LABELS } from '../model/types';
+import { DEFAULT_SETTINGS, STATUS_LABELS, WHERE_LABELS } from '../model/types';
 import { formatEUR, moneyTotal, newId, nowIso, payState } from '../model/entry';
 import { typeHasMoney } from '../model/taskTypes';
 import { store } from '../store/store';
@@ -124,9 +124,9 @@ export function overlappingIds(dayEntries: Entry[]): Set<string> {
 
 // ---------- деньги ----------
 
-/** Запись без денег: тип без денег (settings не передан — только встроенный personal). */
-export function noMoney(e: Pick<Entry, 'type'>, settings?: Settings): boolean {
-  return settings ? !typeHasMoney(settings, e.type) : e.type === 'personal';
+/** Запись без денег: тип без денег (settings не передан — типы по умолчанию). */
+export function noMoney(e: Pick<Entry, 'type'>, settings: Settings = DEFAULT_SETTINGS): boolean {
+  return !typeHasMoney(settings, e.type);
 }
 
 export function atClient(e: Entry, settings?: Settings): number {
@@ -145,7 +145,7 @@ export const PAY_ICONS: Record<ReturnType<typeof payState>, { icon: string; labe
 export const STATUS_ICONS: Record<EntryStatus, string> = {
   lead: '✉',
   booked: '📌',
-  shot: '📷',
+  shot: '☑',
   editing: '✎',
   delivered: '📦',
   done: '✔',
@@ -227,10 +227,10 @@ export interface OverdueInfo {
 export function overdueReason(e: Entry, settings: Settings, today: ISODate): string | undefined {
   if (e.deleted || e.status === 'cancelled') return undefined;
   const last = e.dateEnd ?? e.date;
-  if (last && last < today && (e.status === 'booked' || e.status === 'lead') && e.kind === 'shoot')
-    return 'Съёмка прошла, статус ещё «' + STATUS_LABELS[e.status] + '»';
+  if (last && last < today && (e.status === 'booked' || e.status === 'lead') && e.kind === 'job')
+    return 'Дата прошла, статус ещё «' + STATUS_LABELS[e.status] + '»';
   if (e.status === 'delivered' && atClient(e, settings) > 0)
-    return `Отдано, но ${formatEUR(atClient(e, settings))} ещё у клиента`;
+    return `Сдано, но ${formatEUR(atClient(e, settings))} ещё у клиента`;
   for (const p of e.money) {
     if (p.where !== 'intermediary') continue;
     const since = p.at?.slice(0, 10) ?? e.date ?? e.updatedAt.slice(0, 10);

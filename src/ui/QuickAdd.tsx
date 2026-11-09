@@ -1,4 +1,4 @@
-// Строка быстрого ввода: «12.12 спектакль 11-12 200 от Пети» → предпросмотр → Enter создаёт запись.
+// Строка быстрого ввода: «12.12 встреча 11-12 200 от Пети» → предпросмотр → Enter создаёт запись.
 import { useMemo, useState } from 'react';
 import type { Entry, TrackerDoc } from '../model/types';
 import { KIND_LABELS } from '../model/types';
@@ -20,7 +20,14 @@ function parse(text: string, doc: TrackerDoc): Preview {
   const today = todayISO();
   const [y, m] = today.split('-').map(Number);
   try {
-    const parsed = parseQuickLine(text, { year: y, month: m, sources: doc.sources, today });
+    const parsed = parseQuickLine(text, {
+      year: y,
+      month: m,
+      sources: doc.sources,
+      today,
+      categories: doc.settings.categories,
+      settings: doc.settings,
+    });
     return { text, parsed };
   } catch (e) {
     return { text, error: e instanceof Error ? e.message : String(e) };
@@ -29,7 +36,7 @@ function parse(text: string, doc: TrackerDoc): Preview {
 
 /** Собрать запись из результата разбора; источник/контакт ищутся или создаются в справочниках. */
 export function entryFromQuick(p: Preview, doc: TrackerDoc): Entry {
-  if (!p.parsed) return newEntry({ title: p.text.trim() });
+  if (!p.parsed) return newEntry({ title: p.text.trim() }, doc.settings);
   const partial: Partial<Entry> = { ...p.parsed.entry };
   if (!partial.title?.trim()) partial.title = p.text.trim();
   if (p.parsed.sourceName) {
@@ -49,8 +56,7 @@ export function entryFromQuick(p: Preview, doc: TrackerDoc): Entry {
     }
     partial.contactId = c.id;
   }
-  void doc;
-  return newEntry(partial);
+  return newEntry(partial, doc.settings);
 }
 
 export function QuickAdd({ onCreated }: { onCreated?: (e: Entry) => void }) {
@@ -81,7 +87,7 @@ export function QuickAdd({ onCreated }: { onCreated?: (e: Entry) => void }) {
       <input
         className="quick-input"
         aria-label="Быстрый ввод"
-        placeholder="12.12 спектакль 11-12 200 от Пети — Enter"
+        placeholder="12.12 встреча 11-12 200 от Пети — Enter"
         value={lines.length ? `${lines.length} строк из буфера` : text}
         readOnly={lines.length > 0}
         onChange={(ev) => setText(ev.target.value)}

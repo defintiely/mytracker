@@ -2,7 +2,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import type { Contact, Entry, Settings, Source, TaskTypeDef } from '../model/types';
 import { newId, nowIso } from '../model/entry';
-import { normalizeTaskTypes, taskTypes } from '../model/taskTypes';
+import { defaultNoMoneyTypeId, defaultTypeId, normalizeTaskTypes, taskTypes } from '../model/taskTypes';
 import { store } from '../store/store';
 import { useTracker } from '../store/useTracker';
 import { OfflineError, ScriptCallError } from '../sync/errors';
@@ -513,7 +513,10 @@ function TaskTypesSection({ s, entries }: { s: Settings; entries: Entry[] }) {
   const [color, setColor] = useState(() => NEW_TYPE_COLORS[0]);
   const [money, setMoney] = useState(true);
   const [removing, setRemoving] = useState<TaskTypeDef>();
-  const [target, setTarget] = useState('main');
+  const [target, setTarget] = useState('');
+  const lastOne = active.length <= 1;
+  const moneyDefault = defaultTypeId(s);
+  const noMoneyDefault = defaultNoMoneyTypeId(s);
 
   /** Записать список целиком: все типы, включая tombstone-ы удалённых. */
   const save = (fn: (list: TaskTypeDef[]) => TaskTypeDef[]) =>
@@ -533,16 +536,17 @@ function TaskTypesSection({ s, entries }: { s: Settings; entries: Entry[] }) {
   const tombstone = (id: string) => patch(id, { deleted: true });
 
   const askRemove = (t: TaskTypeDef) => {
+    if (lastOne) return;
     if (!live(t.id).length) {
       if (window.confirm(`Удалить тип «${t.name}»?`)) tombstone(t.id);
       return;
     }
-    setTarget(active.find((x) => x.id !== t.id)?.id ?? 'main');
+    setTarget(active.find((x) => x.id !== t.id)?.id ?? '');
     setRemoving(t);
   };
 
   const confirmRemove = () => {
-    if (!removing) return;
+    if (!removing || !target) return;
     for (const e of live(removing.id)) store.updateEntry(e.id, { type: target });
     tombstone(removing.id);
     setRemoving(undefined);
@@ -553,7 +557,40 @@ function TaskTypesSection({ s, entries }: { s: Settings; entries: Entry[] }) {
       <h2>Типы задач</h2>
       <div className="hint">
         Цвет — главный признак записи: фон строки, полоса карточки, цвет в календаре. У типов «без денег» поля денег
-        скрыты, и они не входят в оборот.
+        скрыты, и они не входят в оборот. Любой тип можно переименовать, перекрасить и удалить — нельзя удалить только
+        последний.
+      </div>
+      <div className="grid2">
+        <div className="field">
+          <label htmlFor="tt-default">Тип по умолчанию</label>
+          <select
+            id="tt-default"
+            value={moneyDefault}
+            onChange={(e) => store.updateSettings({ defaultTypeId: e.target.value })}
+          >
+            {active.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+          <div className="hint">Новые записи и записи с суммой в быстром вводе и импорте.</div>
+        </div>
+        <div className="field">
+          <label htmlFor="tt-default-nomoney">Тип для дел без денег</label>
+          <select
+            id="tt-default-nomoney"
+            value={noMoneyDefault}
+            onChange={(e) => store.updateSettings({ defaultNoMoneyTypeId: e.target.value })}
+          >
+            {active.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+          <div className="hint">Записи без суммы и без признаков работы в быстром вводе и импорте.</div>
+        </div>
       </div>
       <div className="type-list">
         {active.map((t) => (
@@ -569,27 +606,29 @@ function TaskTypesSection({ s, entries }: { s: Settings; entries: Entry[] }) {
               value={t.name}
               onCommit={(v) => v.trim() && v.trim() !== t.name && patch(t.id, { name: v.trim() })}
             />
-            {t.builtin ? (
-              <span className="muted small type-money">{t.money ? 'с деньгами' : 'без денег'} · встроенный</span>
-            ) : (
-              <>
-                <label className="check type-money">
-                  <input
-                    type="checkbox"
-                    aria-label={'С деньгами: ' + t.name}
-                    checked={t.money}
-                    onChange={(e) => patch(t.id, { money: e.target.checked })}
-                  />{' '}
-                  с деньгами
-                </label>
-                <button type="button" className="small danger" aria-label={'Удалить тип ' + t.name} onClick={() => askRemove(t)}>
-                  Удалить
-                </button>
-              </>
-            )}
+            <label className="check type-money">
+              <input
+                type="checkbox"
+                aria-label={'С деньгами: ' + t.name}
+                checked={t.money}
+                onChange={(e) => patch(t.id, { money: e.target.checked })}
+              />{' '}
+              с деньгами
+            </label>
+            <button
+              type="button"
+              className="small danger"
+              aria-label={'Удалить тип ' + t.name}
+              disabled={lastOne}
+              title={lastOne ? 'Последний тип удалить нельзя' : undefined}
+              onClick={() => askRemove(t)}
+            >
+              Удалить
+            </button>
           </div>
         ))}
       </div>
+      {lastOne && <div className="hint">Это последний тип — удалить его нельзя. Сначала добавьте другой.</div>}
       <div className="row gap wrap type-add">
         <input type="color" aria-label="Цвет нового типа" value={color} onChange={(e) => setColor(e.target.value)} />
         <input

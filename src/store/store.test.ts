@@ -66,13 +66,11 @@ describe('итоги месяца и статус оплаты', () => {
     const t = monthTotals(entries, '2026-10', DEFAULT_SETTINGS);
     expect(t.turnover).toBe(1600);
     expect(t.net).toBe(1072);
-    expect(t.main).toBe(900);
-    expect(t.joint).toBe(700);
     expect(t.byType).toEqual({ main: 900, joint: 700 });
     expect(t.received).toBe(350);
     expect(t.atIntermediary).toBe(700);
     expect(t.atClient).toBe(550);
-    expect(t.shoots).toBe(2);
+    expect(t.jobs).toBe(2);
   });
 
   it('payState', () => {

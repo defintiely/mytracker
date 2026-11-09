@@ -1,6 +1,6 @@
 // Карточка записи: все поля Entry. Существующая запись правится сразу в store, новая — черновиком до «Создать».
 import { useState } from 'react';
-import type { ChecklistItem, Contact, Entry, EntryKind, EntryStatus, Media, TrackerDoc } from '../model/types';
+import type { ChecklistItem, Contact, Entry, EntryKind, EntryStatus, TrackerDoc } from '../model/types';
 import { KIND_LABELS, STATUS_LABELS } from '../model/types';
 import { newId, patchEntry } from '../model/entry';
 import { typeColor, typeHasMoney, typeOptions } from '../model/taskTypes';
@@ -94,7 +94,7 @@ export function EntryCard({
             id="ec-title"
             className="title-input"
             value={e.title}
-            placeholder="Например: Альфа праздник осени"
+            placeholder="Например: Проект сайта для Альфы"
             onCommit={(v) => apply({ title: v })}
             autoFocus={isNew}
           />
@@ -110,7 +110,7 @@ export function EntryCard({
                 className={'seg-btn' + (e.type === t.id ? ' on' : '')}
                 aria-pressed={e.type === t.id}
                 style={{ ['--tc' as string]: t.color }}
-                onClick={() => apply({ type: t.id, ...(!t.money && e.kind === 'shoot' ? { kind: 'event' } : {}) })}
+                onClick={() => apply({ type: t.id, ...(!t.money && e.kind === 'job' ? { kind: 'event' } : {}) })}
               >
                 <span className="type-dot" style={{ background: t.color }} />
                 {t.name}
@@ -273,31 +273,6 @@ export function EntryCard({
             />
           </div>
         </fieldset>
-
-        {!personal && (
-          <div className="row gap wrap">
-            {(['photo', 'video'] as Media[]).map((m) => (
-              <label className="check" key={m}>
-                <input
-                  type="checkbox"
-                  checked={e.media.includes(m)}
-                  onChange={(ev) =>
-                    apply({ media: ev.target.checked ? [...e.media, m] : e.media.filter((x) => x !== m) })
-                  }
-                />{' '}
-                {m === 'photo' ? 'Фото' : 'Видео'}
-              </label>
-            ))}
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={e.withEditing !== false}
-                onChange={(ev) => apply({ withEditing: ev.target.checked })}
-              />{' '}
-              С обработкой
-            </label>
-          </div>
-        )}
 
         <ContactBlock doc={doc} entry={e} onPick={(contactId) => apply({ contactId })} />
 

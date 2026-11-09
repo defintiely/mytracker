@@ -47,7 +47,7 @@ export function sampleDoc(): TrackerDoc {
     }),
     e({
       type: 'joint',
-      title: 'Свадьба на море',
+      title: 'Выездной семинар',
       date: '2026-06-05',
       dateEnd: '2026-06-06',
       amount: 400,
@@ -77,7 +77,7 @@ export function sampleDoc(): TrackerDoc {
       ],
     }),
     // Без даты
-    e({ kind: 'work', title: 'ретушь', amount: 700, money: [{ amount: 700, where: 'client' }] }),
+    e({ kind: 'work', title: 'поддержка сайта', amount: 700, money: [{ amount: 700, where: 'client' }] }),
   ];
   return doc;
 }
@@ -164,7 +164,7 @@ describe('exportOds', () => {
     expect(cellAt(rows[0], 0)!.getAttributeNS(NS_TABLE, 'style-name')).toBe('ce_head');
 
     expect(rows.slice(1, 4).map((r) => cellText(cellAt(r, 2)!))).toEqual([
-      'Свадьба на море',
+      'Выездной семинар',
       'Кафе Ромашка <день рождения> & "торт"',
       'зубной',
     ]);
@@ -297,7 +297,7 @@ describe('exportOds', () => {
     ]);
     const val = (i: number) => Number(cellAt(srows[1], i)!.getAttributeNS(NS_OFFICE, 'value'));
     expect([1, 2, 3, 4, 5].map(val)).toEqual([160, 0, 0, 150, 10]);
-    // Итоговая строка: формула по колонке своего типа и по «Съёмкам» (K).
+    // Итоговая строка: формула по колонке своего типа и по «Задачам» (K).
     expect(cellAt(srows[2], 4)!.getAttributeNS(NS_TABLE, 'formula')).toBe('of:=SUM([.E2:.E2])');
     expect(cellAt(srows[2], 10)!.getAttributeNS(NS_TABLE, 'formula')).toBe('of:=SUM([.K2:.K2])');
   });

@@ -8,7 +8,7 @@ import {
   type ColumnVisibilityState,
 } from '@tanstack/react-table';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import type { Entry, EntryKind, EntryStatus, EntryType, Media, Settings, TrackerDoc } from '../model/types';
+import type { Entry, EntryKind, EntryStatus, EntryType, Settings, TrackerDoc } from '../model/types';
 import { KIND_LABELS, STATUS_LABELS } from '../model/types';
 import {
   entryMonth,
@@ -51,7 +51,6 @@ type ColId =
   | 'title'
   | 'location'
   | 'category'
-  | 'media'
   | 'amount'
   | 'money'
   | 'method'
@@ -77,7 +76,6 @@ const COLS: ColMeta[] = [
   { id: 'title', label: 'Название', width: 'minmax(180px, 2fr)', editable: true, hideable: false },
   { id: 'location', label: 'Место', width: 'minmax(120px, 1fr)', editable: true, hideable: true },
   { id: 'category', label: 'Категория', width: '130px', editable: true, hideable: true },
-  { id: 'media', label: 'Фото/видео', width: '96px', editable: true, hideable: true },
   { id: 'amount', label: 'Сумма', width: '84px', editable: true, hideable: true },
   { id: 'money', label: 'Где деньги', width: 'minmax(130px, 1fr)', editable: false, hideable: true },
   { id: 'method', label: 'Способ', width: '84px', editable: true, hideable: true },
@@ -502,10 +500,6 @@ function canEdit(e: Entry, col: ColId, doc: TrackerDoc): boolean {
   return true;
 }
 
-function mediaText(m: Media[]): string {
-  return m.map((x) => (x === 'photo' ? 'фото' : 'видео')).join('+');
-}
-
 function cellText(e: Entry, col: ColId, doc: TrackerDoc): React.ReactNode {
   switch (col) {
     case 'type':
@@ -535,8 +529,6 @@ function cellText(e: Entry, col: ColId, doc: TrackerDoc): React.ReactNode {
       return e.location ?? '';
     case 'category':
       return e.category ?? '';
-    case 'media':
-      return mediaText(e.media);
     case 'amount':
       return typeHasMoney(doc.settings, e.type) ? formatEUR(e.amount) : '';
     case 'method':
@@ -584,8 +576,6 @@ function editValue(e: Entry, col: ColId, doc: TrackerDoc): string {
       return e.sourceId ?? '';
     case 'contact':
       return e.contactId ?? '';
-    case 'media':
-      return e.media.slice().sort().join('+');
     default:
       void doc;
       return '';
@@ -619,8 +609,6 @@ function patchFor(e: Entry, col: ColId, v: string): Partial<Entry> | undefined {
       return { sourceId: v || undefined };
     case 'contact':
       return { contactId: v || undefined };
-    case 'media':
-      return { media: v ? (v.split('+') as Media[]) : [] };
     case 'method': {
       const method = methodFromLabel(s);
       if (e.money.length) return { money: e.money.map((p) => ({ ...p, method })) };
@@ -698,13 +686,6 @@ function CellEditor({
       return select([
         ['', '—'],
         ...doc.contacts.filter((c) => !c.deleted).map((c) => [c.id, c.name || c.phones[0] || '?'] as [string, string]),
-      ]);
-    case 'media':
-      return select([
-        ['', '—'],
-        ['photo', 'фото'],
-        ['video', 'видео'],
-        ['photo+video', 'фото+видео'],
       ]);
     case 'date':
       return <input {...common} type="date" value={v} onChange={(ev) => setV(ev.target.value)} />;

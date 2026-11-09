@@ -1,5 +1,5 @@
 // Контракт модуля импорта ODS. Реализация — readOds.ts, importOds.ts, parseLine.ts.
-import type { Contact, Entry, EntryType, ISODate, Source, YearMonth } from '../model/types';
+import type { Contact, Entry, EntryType, ISODate, Settings, Source, TaskTypeDef, YearMonth } from '../model/types';
 
 export interface OdsCell {
   /** Текст ячейки, абзацы через перевод строки. */
@@ -27,7 +27,7 @@ export interface OdsWorkbook {
   sheets: OdsSheet[];
 }
 
-/** Роль цвета: id любого типа задачи (встроенного или своего) или пометка 'important'. */
+/** Роль цвета: id любого типа задачи или пометка 'important'. */
 export type ColorRole = EntryType | 'important';
 
 export interface ImportedRow {
@@ -42,8 +42,8 @@ export interface ColorStat {
   color: string; // '#rrggbb'
   count: number;
   samples: string[]; // до 5 сырых строк
-  /** Предложенный тип по эвристике (что чаще всего у строк этого цвета по тексту). */
-  suggested?: EntryType;
+  /** Сколько строк этого цвета с деньгами (сумма или признаки работы) — подсказка для сопоставления. */
+  withMoney: number;
 }
 
 export interface MonthCheck {
@@ -76,10 +76,19 @@ export interface ImportOptions {
   includeTemplateSheets?: boolean;
   today?: ISODate;
   /**
-   * id типов без денег (для сопоставления цвета со своим типом). По умолчанию — только 'personal'.
-   * У строк таких типов деньги не заводятся, как у личных дел.
+   * Тип для строк с суммой или признаками работы (без цвета или с цветом «по тексту»).
+   * По умолчанию — тип по умолчанию из taskTypes (первый с деньгами).
    */
-  noMoneyTypes?: string[];
+  moneyTypeId?: EntryType;
+  /** Тип для строк без суммы и без признаков работы. По умолчанию — первый тип без денег. */
+  noMoneyTypeId?: EntryType;
+  /**
+   * Типы задач документа — откуда берётся флаг «с деньгами» для типов из colorMap и типов по умолчанию.
+   * По умолчанию — типы нового документа. Тип, которого нет в списке, считается «с деньгами».
+   */
+  taskTypes?: TaskTypeDef[];
+  /** Категории из настроек — категория строки определяется по совпадению с ними. */
+  categories?: string[];
 }
 
 export interface ImportResult {
@@ -94,6 +103,8 @@ export interface ImportResult {
 /** Результат разбора одной строки быстрого ввода / ячейки. */
 export interface ParsedLine {
   entry: Partial<Entry>;
+  /** Признак денег: сумма или признаки работы (тип в entry.type выбран по нему). */
+  money: boolean;
   /** Имя источника, найденное в тексте («Петя»), — для сопоставления со справочником. */
   sourceName?: string;
   contact?: { name?: string; phones: string[]; channels: Contact['channels'] };
@@ -106,4 +117,8 @@ export interface ParseContext {
   month: number; // 1..12
   sources: Source[];
   today?: ISODate;
+  /** Категории из настроек (по умолчанию — DEFAULT_CATEGORIES). */
+  categories?: string[];
+  /** Настройки документа — тип по умолчанию и тип для дел без денег (по умолчанию — DEFAULT_SETTINGS). */
+  settings?: Settings;
 }

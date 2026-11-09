@@ -7,7 +7,8 @@ import { emptyDoc, newEntry } from '../model/entry';
 
 vi.mock('../ods/parseLine', () => ({
   parseQuickLine: vi.fn((text: string) => ({
-    entry: { title: 'Спектакль', date: '2026-12-12', timeStart: '11:00', timeEnd: '12:00', amount: 200, type: 'joint' },
+    entry: { title: 'Встреча', date: '2026-12-12', timeStart: '11:00', timeEnd: '12:00', amount: 200, type: 'main' },
+    money: true,
     sourceName: 'Петя',
     issues: text.includes('?') ? ['дата под вопросом'] : [],
   })),
@@ -50,16 +51,16 @@ describe('App', () => {
   it('быстрый ввод создаёт запись и источник', () => {
     render(<App />);
     const input = screen.getByLabelText('Быстрый ввод');
-    fireEvent.change(input, { target: { value: '12.12 спектакль 11-12 200 от Пети' } });
+    fireEvent.change(input, { target: { value: '12.12 встреча 11-12 200 от Пети' } });
     // предпросмотр распознанного
-    expect(screen.getByText('Спектакль')).toBeTruthy();
+    expect(screen.getByText('Встреча')).toBeTruthy();
     fireEvent.keyDown(input, { key: 'Enter' });
     const doc = store.getDoc();
     expect(doc.entries).toHaveLength(1);
     const e = doc.entries[0];
-    expect(e.title).toBe('Спектакль');
+    expect(e.title).toBe('Встреча');
     expect(e.amount).toBe(200);
-    expect(e.type).toBe('joint');
+    expect(e.type).toBe('main'); // тип по умолчанию; источник тип не меняет
     expect(doc.sources).toHaveLength(1);
     expect(doc.sources[0].name).toBe('Петя');
     expect(e.sourceId).toBe(doc.sources[0].id);
@@ -67,31 +68,31 @@ describe('App', () => {
   });
 
   it('правка в карточке меняет store', () => {
-    const e = newEntry({ title: 'Свадьба', date: '2030-05-01', status: 'booked', amount: 500 });
+    const e = newEntry({ title: 'Проект сайта', date: '2030-05-01', status: 'booked', amount: 500 });
     act(() => store.upsertEntry(e));
     render(<App />);
     const nav = screen.getByRole('navigation', { name: 'Разделы' });
     fireEvent.click(within(nav).getByRole('button', { name: /Задачи/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Канбан' }));
-    fireEvent.click(screen.getByText('Свадьба'));
+    fireEvent.click(screen.getByText('Проект сайта'));
     const dialog = screen.getByRole('dialog');
     const title = within(dialog).getByLabelText('Название');
     fireEvent.focus(title);
-    fireEvent.change(title, { target: { value: 'Свадьба Анны' } });
+    fireEvent.change(title, { target: { value: 'Проект сайта Анны' } });
     fireEvent.blur(title);
-    expect(store.getDoc().entries[0].title).toBe('Свадьба Анны');
+    expect(store.getDoc().entries[0].title).toBe('Проект сайта Анны');
 
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Отснято' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Сделано' }));
     const after = store.getDoc().entries[0];
     expect(after.status).toBe('shot');
-    expect(after.history?.at(-1)?.text).toContain('Отснято');
+    expect(after.history?.at(-1)?.text).toContain('Сделано');
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Всё получено' }));
     expect(store.getDoc().entries[0].money).toEqual([expect.objectContaining({ amount: 500, where: 'owner' })]);
   });
 
   it('свой тип: добавить в настройках → есть в выборе типа карточки → запись окрашена его цветом', () => {
-    const e = newEntry({ title: 'Курс ретуши', date: '2030-05-01', status: 'booked', amount: 300 });
+    const e = newEntry({ title: 'Курс по Excel', date: '2030-05-01', status: 'booked', amount: 300 });
     act(() => store.upsertEntry(e));
     render(<App />);
     const nav = screen.getByRole('navigation', { name: 'Разделы' });
@@ -102,12 +103,11 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: '+ Добавить тип' }));
     const added = store.getDoc().settings.taskTypes.find((t) => t.name === 'Обучение')!;
     expect(added).toMatchObject({ color: '#ab47bc', money: true });
-    expect(added.builtin).toBeUndefined();
     expect(screen.getByLabelText('Цвет типа Обучение')).toBeTruthy();
 
     fireEvent.click(within(nav).getByRole('button', { name: /Задачи/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Канбан' }));
-    fireEvent.click(screen.getByText('Курс ретуши'));
+    fireEvent.click(screen.getByText('Курс по Excel'));
     const dialog = screen.getByRole('dialog');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Обучение' }));
     expect(store.getDoc().entries[0].type).toBe(added.id);
@@ -115,16 +115,16 @@ describe('App', () => {
     expect(card.style.getPropertyValue('--tc')).toBe('#ab47bc');
     // Тип с деньгами — поле суммы на месте.
     expect(within(dialog).queryByLabelText('Сумма, €')).toBeTruthy();
-    // Встроенный тип без денег — поле суммы скрыто.
+    // Тип без денег — поле суммы скрыто.
     fireEvent.click(within(dialog).getByRole('button', { name: 'Личное' }));
     expect(within(dialog).queryByLabelText('Сумма, €')).toBeNull();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Обучение' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Готово' }));
-    const mini = screen.getByText('Курс ретуши').closest('.mini') as HTMLElement;
+    const mini = screen.getByText('Курс по Excel').closest('.mini') as HTMLElement;
     expect(mini.style.getPropertyValue('--tc')).toBe('#ab47bc');
   });
 
-  it('удаление своего типа: записи переводятся в выбранный тип, тип становится tombstone', () => {
+  it('удаление типа: записи переводятся в выбранный тип, тип становится tombstone', () => {
     const doc = emptyDoc();
     doc.settings.taskTypes = [
       ...doc.settings.taskTypes,
@@ -141,8 +141,9 @@ describe('App', () => {
     const nav = screen.getByRole('navigation', { name: 'Разделы' });
     fireEvent.click(within(nav).getByRole('button', { name: /Настройки/ }));
 
-    // Встроенные удалить нельзя.
-    expect(screen.queryByRole('button', { name: 'Удалить тип Личное' })).toBeNull();
+    // Типы по умолчанию — такие же: их можно удалить.
+    expect(screen.getByRole('button', { name: 'Удалить тип Личное' })).toBeTruthy();
+    expect((screen.getByLabelText('С деньгами: Личное') as HTMLInputElement).disabled).toBe(false);
 
     fireEvent.click(screen.getByRole('button', { name: 'Удалить тип Обучение' }));
     const dialog = screen.getByRole('dialog');
@@ -159,7 +160,38 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Удалить тип Семья' }));
     expect(confirm).toHaveBeenCalled();
     expect(store.getDoc().settings.taskTypes.find((t) => t.id === 'fam')).toMatchObject({ deleted: true });
+
+    // Тип по умолчанию «Основная работа» удаляется так же; записи — в выбранный тип.
+    fireEvent.click(screen.getByRole('button', { name: 'Удалить тип Личное' }));
+    expect(store.getDoc().settings.taskTypes.find((t) => t.id === 'personal')).toMatchObject({ deleted: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Удалить тип Основная работа' }));
+    expect(store.getDoc().settings.taskTypes.find((t) => t.id === 'main')).toMatchObject({ deleted: true });
+
+    // Последний тип удалить нельзя.
+    const last = screen.getByRole('button', { name: 'Удалить тип Совместная работа' }) as HTMLButtonElement;
+    expect(last.disabled).toBe(true);
+    expect(screen.getByText(/последний тип — удалить его нельзя/)).toBeTruthy();
     confirm.mockRestore();
+  });
+
+  it('тип по умолчанию из настроек: новая запись из карточки', () => {
+    const doc = emptyDoc();
+    doc.settings.taskTypes = [...doc.settings.taskTypes, { id: 'edu', name: 'Обучение', color: '#ab47bc', money: true }];
+    act(() => store.replaceDoc(doc));
+    render(<App />);
+    const nav = screen.getByRole('navigation', { name: 'Разделы' });
+    fireEvent.click(within(nav).getByRole('button', { name: /Настройки/ }));
+    fireEvent.change(screen.getByLabelText('Тип по умолчанию'), { target: { value: 'edu' } });
+    expect(store.getDoc().settings.defaultTypeId).toBe('edu');
+
+    fireEvent.change(screen.getByLabelText('Тип для дел без денег'), { target: { value: 'joint' } });
+    expect(store.getDoc().settings.defaultNoMoneyTypeId).toBe('joint');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Новая запись' }));
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('button', { name: 'Обучение' }).getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Создать' }));
+    expect(store.getDoc().entries.map((x) => x.type)).toEqual(['edu']);
   });
 
   it('запись неизвестного типа не роняет интерфейс', () => {

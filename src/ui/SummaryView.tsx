@@ -1,4 +1,4 @@
-// Экран «Итоги» (SPEC §6.4): по месяцам и годам — оборот, чистыми ≈, съёмки, средний чек,
+// Экран «Итоги» (SPEC §6.4): по месяцам и годам — оборот, чистыми ≈, число задач, средний чек,
 // разбивка по категориям и источникам, деньги у клиентов/посредников, сравнение с прошлым годом.
 import { useMemo, useState } from 'react';
 import type { Entry, TrackerDoc, YearMonth } from '../model/types';
@@ -12,9 +12,9 @@ function countable(doc: TrackerDoc): Entry[] {
   return doc.entries.filter((e) => !e.deleted && e.status !== 'cancelled' && typeHasMoney(doc.settings, e.type));
 }
 
-/** Средний чек: оборот / число записей с положительной суммой (съёмки и обработка). */
+/** Средний чек: оборот / число записей с положительной суммой (задачи и работа без даты). */
 function avgCheck(list: Entry[]): number {
-  const paid = list.filter((e) => (e.amount ?? 0) > 0 && (e.kind === 'shoot' || e.kind === 'work'));
+  const paid = list.filter((e) => (e.amount ?? 0) > 0 && (e.kind === 'job' || e.kind === 'work'));
   if (!paid.length) return 0;
   return Math.round(paid.reduce((s, e) => s + (e.amount ?? 0), 0) / paid.length);
 }
@@ -25,23 +25,19 @@ function sumTotals(list: MonthTotals[], month: string): MonthTotals {
     turnover: 0,
     net: 0,
     byType: {},
-    main: 0,
-    joint: 0,
     received: 0,
     atIntermediary: 0,
     atClient: 0,
-    shoots: 0,
+    jobs: 0,
   };
   for (const x of list) {
     t.turnover += x.turnover;
     t.net += x.net;
     for (const [id, a] of Object.entries(x.byType)) t.byType[id] = (t.byType[id] ?? 0) + a;
-    t.main += x.main;
-    t.joint += x.joint;
     t.received += x.received;
     t.atIntermediary += x.atIntermediary;
     t.atClient += x.atClient;
-    t.shoots += x.shoots;
+    t.jobs += x.jobs;
   }
   t.net = Math.round(t.net * 100) / 100;
   return t;
@@ -159,9 +155,9 @@ export function SummaryView() {
           <div className="stat-sub">× {doc.settings.netFactor}</div>
         </div>
         <div className="stat">
-          <div className="stat-label">Съёмок</div>
-          <div className="stat-value">{scopeT.shoots}</div>
-          <div className="stat-sub">год назад {scopePrev.shoots}</div>
+          <div className="stat-label">Задач</div>
+          <div className="stat-value">{scopeT.jobs}</div>
+          <div className="stat-sub">год назад {scopePrev.jobs}</div>
         </div>
         <div className="stat">
           <div className="stat-label">Средний чек</div>
@@ -212,7 +208,7 @@ export function SummaryView() {
                 </th>
               ))}
               <th>Чистыми ≈</th>
-              <th>Съёмок</th>
+              <th>Задач</th>
               <th>Год назад</th>
               <th>У клиентов</th>
               <th>У посредников</th>
@@ -227,7 +223,7 @@ export function SummaryView() {
                   <td key={c.id}>{formatEUR(t.byType[c.id] ?? 0)}</td>
                 ))}
                 <td>{formatEUR(t.net)}</td>
-                <td>{t.shoots}</td>
+                <td>{t.jobs}</td>
                 <td>
                   {formatEUR(prevTotals[i].turnover)} {delta(t.turnover, prevTotals[i].turnover)}
                 </td>
@@ -242,7 +238,7 @@ export function SummaryView() {
                 <td key={c.id}>{formatEUR(yearT.byType[c.id] ?? 0)}</td>
               ))}
               <td>{formatEUR(yearT.net)}</td>
-              <td>{yearT.shoots}</td>
+              <td>{yearT.jobs}</td>
               <td>
                 {formatEUR(prevYearT.turnover)} {delta(yearT.turnover, prevYearT.turnover)}
               </td>
@@ -268,7 +264,7 @@ export function SummaryView() {
               <span className="bar-fill" style={{ width: `${(Math.max(0, t.turnover) / maxYear) * 100}%` }} />
             </span>
             <span className="bar-value">
-              {formatEUR(t.turnover)} <span className="muted small">≈{formatEUR(t.net)} · {t.shoots} съёмок</span>
+              {formatEUR(t.turnover)} <span className="muted small">≈{formatEUR(t.net)} · {t.jobs} задач</span>
             </span>
           </div>
         ))}

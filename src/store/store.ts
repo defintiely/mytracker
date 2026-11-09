@@ -3,7 +3,7 @@
 // Синхронизатор (src/sync) читает getDoc()/isDirty() и после слияния вызывает replaceDoc().
 import { openDB, type IDBPDatabase } from 'idb';
 import type { Contact, Entry, Settings, Source, TrackerDoc } from '../model/types';
-import { emptyDoc, nowIso, patchEntry } from '../model/entry';
+import { emptyDoc, normalizeEntries, nowIso, patchEntry } from '../model/entry';
 import { normalizeTaskTypes } from '../model/taskTypes';
 
 const DB_NAME = 'work-life-tracker';
@@ -169,15 +169,20 @@ function upsertById<T extends { id: string }>(list: T[], item: T): T[] {
   return copy;
 }
 
+/**
+ * Документ из IndexedDB → текущая схема. Старые записи: вид 'shoot' → 'job', поля media/withEditing стираются.
+ * Старые типы задач (с флагом builtin или без taskTypes) → обычные типы. Имя календаря пользователя
+ * не трогается — по умолчанию подставляется только для документов без него. Идемпотентно.
+ */
 export function migrate(doc: TrackerDoc): TrackerDoc {
   const base = emptyDoc();
   return {
     ...base,
     ...doc,
+    entries: Array.isArray(doc.entries) ? normalizeEntries(doc.entries) : base.entries,
     settings: {
       ...base.settings,
       ...doc.settings,
-      // Старые документы без taskTypes: типы из typeColors и названий по умолчанию.
       taskTypes: normalizeTaskTypes(doc.settings),
       calendar: { ...base.settings.calendar, ...(doc.settings?.calendar ?? {}) },
     },

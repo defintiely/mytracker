@@ -13,11 +13,10 @@ function entry(id: string, p: Partial<Entry> = {}): Entry {
   return {
     id,
     type: 'main',
-    kind: 'shoot',
-    title: 'Съёмка ' + id,
+    kind: 'job',
+    title: 'Задача ' + id,
     dateTentative: false,
     allDay: true,
-    media: [],
     currency: 'EUR',
     money: [],
     status: 'booked',
@@ -109,7 +108,7 @@ describe('merge: по полям', () => {
     const base = doc([b]);
     // Одинаковое значение, но другие объекты — это не изменение.
     const local = doc([{ ...b, money: [{ amount: 100, where: 'client' }] }]);
-    const remote = doc([edit(b, T1, { checklist: [{ id: 'c1', text: 'отдать фото', done: false }] })]);
+    const remote = doc([edit(b, T1, { checklist: [{ id: 'c1', text: 'отправить отчёт', done: false }] })]);
     const { doc: out, conflicts } = merge(base, local, remote, { now: NOW });
     expect(find(out, 'a')!.checklist).toHaveLength(1);
     expect(conflicts).toEqual([]);

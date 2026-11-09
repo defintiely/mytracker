@@ -48,8 +48,6 @@ export const GOOGLE_EVENT_COLORS: Record<string, string> = {
   '11': '#dc2127', // томат
 };
 
-const ICON_PHOTO = '📷';
-const ICON_VIDEO = '🎥';
 export const BUSY_TITLE = 'Занято';
 export const CANCELLED_PREFIX = 'Отменено: ';
 export const TENTATIVE_PREFIX = '? ';
@@ -244,18 +242,12 @@ function telLink(phone: string): string {
   return `<a href="tel:${num}">${escapeHtml(phone)}</a>`;
 }
 
-function buildTitle(e: Entry, busy: boolean, withMoney: boolean): string {
+function buildTitle(e: Entry, busy: boolean): string {
   let title: string;
   if (busy) {
     title = BUSY_TITLE;
   } else {
-    const base = e.title.trim() || e.category || (e.kind === 'event' ? 'Дело' : 'Съёмка');
-    let icons = '';
-    if (withMoney) {
-      if (e.media.includes('photo')) icons += ICON_PHOTO;
-      if (e.media.includes('video')) icons += ICON_VIDEO;
-    }
-    title = icons ? icons + ' ' + base : base;
+    title = e.title.trim() || e.category || (e.kind === 'event' ? 'Дело' : 'Задача');
   }
   if (e.dateTentative) title = TENTATIVE_PREFIX + title;
   if (e.status === 'cancelled') title = CANCELLED_PREFIX + title;
@@ -288,7 +280,7 @@ function buildDescription(e: Entry, doc: TrackerDoc): string | undefined {
 /** Выгружается ли запись в календарь — без учёта отмены. */
 function isExportable(e: Entry, doc: TrackerDoc): boolean {
   if (e.deleted || !e.date) return false;
-  if (e.kind !== 'shoot' && e.kind !== 'event') return false;
+  if (e.kind !== 'job' && e.kind !== 'event') return false;
   // Режим «личного» применяется ко всем типам без денег.
   if (!typeHasMoney(doc.settings, e.type) && doc.settings.calendar.personalMode === 'skip') return false;
   return true;
@@ -312,7 +304,7 @@ export function entryToEvent(entry: Entry, doc: TrackerDoc): GCalEvent | null {
     .slice(0, 5);
 
   const body: GCalEvent = {
-    summary: buildTitle(entry, busy, withMoney),
+    summary: buildTitle(entry, busy),
     start: when.start,
     end: when.end,
     reminders: { useDefault: false, overrides: minutes.map((m) => ({ method: 'popup', minutes: m })) },

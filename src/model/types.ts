@@ -6,12 +6,9 @@ export type ISODate = string;      // 'YYYY-MM-DD'
 export type ISODateTime = string;  // new Date().toISOString()
 export type YearMonth = string;    // 'YYYY-MM'
 
-/** Встроенные типы задач: есть всегда, на них опираются импорт и парсер. */
-export type BuiltinType = 'main' | 'joint' | 'personal';
-
 /**
- * Тип задачи — id из Settings.taskTypes (встроенный 'main' | 'joint' | 'personal' или свой).
- * Задаёт цвет записи везде.
+ * Тип задачи — id из Settings.taskTypes. Все типы равноправны: любой можно переименовать,
+ * перекрасить, переключить «с деньгами» и удалить. Задаёт цвет записи везде.
  */
 export type EntryType = string;
 
@@ -22,18 +19,18 @@ export interface TaskTypeDef {
   color: string;
   /** Тип с деньгами: показывает поля денег и входит в оборот. */
   money: boolean;
-  /** Встроенный тип (main/joint/personal): удалить нельзя, флаг money не меняется. */
-  builtin?: boolean;
   /** Tombstone: тип удалён (чтобы синхронизация не вернула его). */
   deleted?: boolean;
 }
 
-/** Вид записи. */
-export type EntryKind = 'shoot' | 'work' | 'payment' | 'event' | 'note';
+/**
+ * Вид записи: job — задача с датой, work — работа без даты (засчитывается в месяц учёта),
+ * payment — оплата/предоплата, event — дело, note — заметка.
+ */
+export type EntryKind = 'job' | 'work' | 'payment' | 'event' | 'note';
 
+/** Статус записи. id хранятся в данных и не переименовываются; подписи — STATUS_LABELS. */
 export type EntryStatus = 'lead' | 'booked' | 'shot' | 'editing' | 'delivered' | 'done' | 'cancelled';
-
-export type Media = 'photo' | 'video';
 
 /** Где лежат деньги. */
 export type MoneyWhere = 'client' | 'intermediary' | 'owner';
@@ -82,8 +79,6 @@ export interface Entry {
   location?: string;
   mapUrl?: string;
   category?: string;
-  media: Media[];
-  withEditing?: boolean;
   amount?: number;
   currency: 'EUR';
   /** Сумма частей = amount (если amount задан). */
@@ -144,8 +139,18 @@ export interface Settings {
   /** Грубая оценка чистого дохода после налогов: оборот × netFactor. */
   netFactor: number;
   categories: string[];
-  /** Типы задач (встроенные + свои). Читать через taskTypes()/typeDef() из model/taskTypes. */
+  /** Типы задач. Читать через taskTypes()/typeDef() из model/taskTypes. */
   taskTypes: TaskTypeDef[];
+  /**
+   * Тип по умолчанию: новые записи и записи с суммой при быстром вводе и импорте.
+   * Не задан или удалён — первый живой тип с деньгами (см. defaultTypeId()).
+   */
+  defaultTypeId?: string;
+  /**
+   * Тип для дел без денег (запись без суммы и без признаков работы).
+   * Не задан или удалён — первый живой тип без денег, иначе тип по умолчанию (см. defaultNoMoneyTypeId()).
+   */
+  defaultNoMoneyTypeId?: string;
   /** @deprecated Старое поле цветов трёх типов; не используется, читается только при миграции. */
   typeColors?: TypeColors;
   /** Код страны для номеров без кода (например '44') — для ссылок WhatsApp/Telegram. */
@@ -175,35 +180,36 @@ export interface TrackerDoc {
   settings: Settings;
 }
 
+/** Категории нового документа; пользователь правит список в «Настройках». */
 export const DEFAULT_CATEGORIES = [
-  'день рождения',
-  'детский день рождения',
-  'свадьба',
-  'крестины',
-  'корпоратив',
-  'семейная',
-  'портреты',
-  'интерьер',
-  'контент',
-  'школа',
-  'прессволл',
-  'спектакль',
-  'репортаж',
-  'ретушь',
+  'консультация',
+  'проект',
+  'встреча',
+  'поддержка',
+  'разработка',
+  'дизайн',
+  'обучение',
+  'прочее',
+];
+
+/**
+ * Типы задач нового документа — обычные элементы списка: их можно переименовать, перекрасить и удалить.
+ * id 'main' | 'joint' | 'personal' сохранены, чтобы записи старых документов не потеряли тип.
+ */
+export const DEFAULT_TASK_TYPES: readonly TaskTypeDef[] = [
+  { id: 'main', name: 'Основная работа', color: '#a5d6a7', money: true },
+  { id: 'joint', name: 'Совместная работа', color: '#80deea', money: true },
+  { id: 'personal', name: 'Личное', color: '#fff59d', money: false },
 ];
 
 export const DEFAULT_SETTINGS: Settings = {
   netFactor: 0.67,
   categories: DEFAULT_CATEGORIES,
-  taskTypes: [
-    { id: 'main', name: 'Основная работа', color: '#a5d6a7', money: true, builtin: true },
-    { id: 'joint', name: 'Совместная работа', color: '#80deea', money: true, builtin: true },
-    { id: 'personal', name: 'Личное', color: '#fff59d', money: false, builtin: true },
-  ],
+  taskTypes: DEFAULT_TASK_TYPES.map((t) => ({ ...t })),
   intermediaryOverdueDays: 14,
   calendar: {
     enabled: false,
-    calendarName: 'Съёмки',
+    calendarName: 'Трекер',
     includeMoney: false,
     personalMode: 'full',
     reminderMinutes: [24 * 60, 120],
@@ -214,24 +220,17 @@ export const DEFAULT_SETTINGS: Settings = {
 
 export const STATUS_LABELS: Record<EntryStatus, string> = {
   lead: 'Заявка',
-  booked: 'Забронировано',
-  shot: 'Отснято',
-  editing: 'В обработке',
-  delivered: 'Отдано',
+  booked: 'Запланировано',
+  shot: 'Сделано',
+  editing: 'В работе',
+  delivered: 'Сдано',
   done: 'Закрыто',
   cancelled: 'Отменено',
 };
 
-/** Названия встроенных типов по умолчанию (текущие названия — typeName() из model/taskTypes). */
-export const TYPE_LABELS: Record<BuiltinType, string> = {
-  main: 'Основная работа',
-  joint: 'Совместная работа',
-  personal: 'Личное',
-};
-
 export const KIND_LABELS: Record<EntryKind, string> = {
-  shoot: 'Съёмка',
-  work: 'Обработка',
+  job: 'Задача',
+  work: 'Работа без даты',
   payment: 'Оплата',
   event: 'Дело',
   note: 'Заметка',

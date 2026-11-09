@@ -1,6 +1,6 @@
 import { strToU8, zipSync } from 'fflate';
 import type { Contact, Entry, MoneyPart, Settings, Source, TrackerDoc, YearMonth } from '../model/types';
-import { STATUS_LABELS } from '../model/types';
+import { DEFAULT_SETTINGS, STATUS_LABELS } from '../model/types';
 import { entryMonth, formatEUR, monthLabel, monthTotals, moneyTotal, turnoverByType } from '../model/entry';
 import { typeColor, typeHasMoney, UNKNOWN_TYPE_COLOR } from '../model/taskTypes';
 import type { MonthTotals } from '../model/entry';
@@ -43,7 +43,7 @@ const SUMMARY_TAIL: { title: string; width: string }[] = [
   { title: 'Получено', width: '2.6cm' },
   { title: 'У посредников', width: '2.8cm' },
   { title: 'У клиентов', width: '2.6cm' },
-  { title: 'Съёмок', width: '2cm' },
+  { title: 'Задач', width: '2cm' },
 ];
 const TYPE_COL_WIDTH = '2.6cm';
 const SUMMARY_COLUMNS = [...SUMMARY_HEAD, ...SUMMARY_TAIL];
@@ -149,9 +149,8 @@ function num(n: number): string {
 }
 
 /** Человекочитаемо: «получено», «у посредника: Петя 200», «у клиента», «получено 150; у клиента 150». */
-export function formatMoneyWhere(e: Entry, sources: Map<string, Source>, settings?: Settings): string {
-  const noMoney = settings ? !typeHasMoney(settings, e.type) : e.type === 'personal';
-  if (noMoney || !e.amount) return '';
+export function formatMoneyWhere(e: Entry, sources: Map<string, Source>, settings: Settings = DEFAULT_SETTINGS): string {
+  if (!typeHasMoney(settings, e.type) || !e.amount) return '';
   const owner = moneyTotal(e.money, 'owner');
   const byHolder = new Map<string, number>();
   for (const p of e.money) {
@@ -401,7 +400,7 @@ function colLetter(i: number): string {
 }
 
 function summarySheet(groups: SheetGroup[], doc: TrackerDoc): string {
-  // Колонка на каждый тип с деньгами (встроенные и свои) + неизвестные id, по которым есть суммы.
+  // Колонка на каждый тип с деньгами + неизвестные id, по которым есть суммы.
   const all: Record<string, number> = {};
   for (const g of groups) for (const [id, a] of Object.entries(g.totals.byType)) all[id] = (all[id] ?? 0) + a;
   const types = turnoverByType(doc.settings, all, { allTypes: true });
@@ -418,13 +417,13 @@ function summarySheet(groups: SheetGroup[], doc: TrackerDoc): string {
         currencyCell(t.received, 'ce_plain_cur'),
         currencyCell(t.atIntermediary, 'ce_plain_cur'),
         currencyCell(t.atClient, 'ce_plain_cur'),
-        floatCell(t.shoots, 'ce_plain'),
+        floatCell(t.jobs, 'ce_plain'),
       ]),
     );
   }
   if (groups.length) {
     const last = groups.length + 1;
-    type NumKey = 'turnover' | 'net' | 'received' | 'atIntermediary' | 'atClient' | 'shoots';
+    type NumKey = 'turnover' | 'net' | 'received' | 'atIntermediary' | 'atClient' | 'jobs';
     const sum = (k: NumKey) => groups.reduce((s, g) => s + g.totals[k], 0);
     const values = [
       sum('turnover'),
@@ -439,7 +438,7 @@ function summarySheet(groups: SheetGroup[], doc: TrackerDoc): string {
       row([
         textCell('Всего', 'ce_total'),
         ...values.map((v, i) => currencyCell(v, 'ce_total_cur', formula(i + 1))),
-        floatCell(sum('shoots'), 'ce_total', formula(values.length + 1)),
+        floatCell(sum('jobs'), 'ce_total', formula(values.length + 1)),
       ]),
     );
   }
@@ -504,7 +503,7 @@ function metaXml(): string {
     XML_HEAD +
     `<office:document-meta ${NS} office:version="1.3"><office:meta>` +
     '<meta:generator>work-life-tracker</meta:generator>' +
-    '<dc:title>Трекер съёмок</dc:title>' +
+    '<dc:title>Трекер работы</dc:title>' +
     `<meta:creation-date>${now}</meta:creation-date><dc:date>${now}</dc:date>` +
     '</office:meta></office:document-meta>'
   );

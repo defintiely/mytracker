@@ -1,6 +1,7 @@
 import type { TrackerDoc } from '../model/types';
 import { DEFAULT_SETTINGS } from '../model/types';
 import { normalizeTaskTypes } from '../model/taskTypes';
+import { normalizeEntries } from '../model/entry';
 
 export const BACKUP_APP = 'work-life-tracker';
 
@@ -45,7 +46,7 @@ export function parseBackup(text: string): TrackerDoc {
   let doc: unknown = data;
   if ('app' in data || 'doc' in data) {
     if (data.app !== BACKUP_APP) {
-      fail(`это бэкап другого приложения («${String(data.app)}»), а не трекера съёмок.`);
+      fail(`это бэкап другого приложения («${String(data.app)}»), а не трекера работы.`);
     }
     doc = data.doc;
     if (!isObject(doc)) fail('в бэкапе нет документа трекера (поле doc).');
@@ -80,7 +81,8 @@ export function parseBackup(text: string): TrackerDoc {
 
   return {
     schemaVersion: 1,
-    entries: d.entries as TrackerDoc['entries'],
+    // Записи старых версий: вид 'shoot' → 'job', поля media/withEditing стираются.
+    entries: normalizeEntries(d.entries as TrackerDoc['entries']),
     contacts: d.contacts as TrackerDoc['contacts'],
     sources: d.sources as TrackerDoc['sources'],
     settings: settings as TrackerDoc['settings'],

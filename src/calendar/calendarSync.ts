@@ -5,7 +5,9 @@
 import type { AfterSyncHook } from '../sync/types';
 import type { CalendarResponse, DesiredEvent, ScriptClient } from '../sync/scriptApi';
 import type { Entry, Settings, TrackerDoc } from '../model/types';
+import { DEFAULT_SETTINGS } from '../model/types';
 import { newEntry } from '../model/entry';
+import { defaultTypeId } from '../model/taskTypes';
 import { store as defaultStore } from '../store/store';
 import {
   CALENDAR_TIME_ZONE,
@@ -16,7 +18,7 @@ import {
   movedToPatch,
 } from './mapping';
 
-/** События календаря «Съёмки», созданные не приложением, — предложить импорт (SPEC §10). */
+/** События календаря трекера, созданные не приложением, — предложить импорт (SPEC §10). */
 export interface CalendarProposal {
   eventId: string;
   title: string;
@@ -140,7 +142,7 @@ export function createCalendarSync(deps: CalendarSyncDeps): CalendarSync {
     }
 
     const res: CalendarResponse = await client.calendar({
-      calendarName: cal.calendarName || 'Съёмки',
+      calendarName: cal.calendarName || DEFAULT_SETTINGS.calendar.calendarName,
       timeZone: CALENDAR_TIME_ZONE,
       events,
       windowStart,
@@ -242,9 +244,10 @@ export function dismissProposal(eventId: string): void {
 
 /** Превратить предложение в запись (UI сохраняет её через store). */
 export function proposalToEntry(p: CalendarProposal): Entry {
+  const settings = defaultStore.getDoc().settings;
   return newEntry({
-    type: 'main',
-    kind: 'shoot',
+    type: defaultTypeId(settings),
+    kind: 'job',
     title: p.title,
     date: p.date,
     dateEnd: p.dateEnd,

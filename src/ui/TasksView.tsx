@@ -66,8 +66,8 @@ export function TasksView() {
         </div>
         {mode === 'board' && (
           <label className="check">
-            <input type="checkbox" checked={showPersonal} onChange={(e) => setShowPersonal(e.target.checked)} /> Личные
-            дела
+            <input type="checkbox" checked={showPersonal} onChange={(e) => setShowPersonal(e.target.checked)} /> Дела без
+            денег
           </label>
         )}
       </div>

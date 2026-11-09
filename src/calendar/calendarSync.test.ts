@@ -52,7 +52,7 @@ async function setup(enabled = true): Promise<void> {
 }
 
 function add(p: Partial<Entry>): Entry {
-  const e = newEntry({ title: 'Съёмка', date: '2026-11-20', media: ['photo'], ...p });
+  const e = newEntry({ title: 'Задача', date: '2026-11-20', ...p });
   store.upsertEntry(e);
   return e;
 }
@@ -78,7 +78,7 @@ describe('calendarAfterSync (Apps Script)', () => {
 
   it('выгрузка: запрос с событиями записей, календарь создан, calendarId сохранён', async () => {
     const a = add({ title: 'Альфа', timeStart: '10:00', timeEnd: '12:00', location: 'Old Town' });
-    const b = add({ title: 'Свадьба', date: '2026-11-21', dateEnd: '2026-11-22' });
+    const b = add({ title: 'Выездной семинар', date: '2026-11-21', dateEnd: '2026-11-22' });
     add({ title: 'Предоплата', kind: 'payment' });
     add({ title: 'Без даты', date: undefined });
     add({ title: 'Давно', date: '2026-01-10' }); // старше окна — не шлём
@@ -86,14 +86,14 @@ describe('calendarAfterSync (Apps Script)', () => {
     await sync.afterSync(client);
 
     const req = lastReq();
-    expect(req.calendarName).toBe('Съёмки');
+    expect(req.calendarName).toBe('Трекер');
     expect(req.timeZone).toBe(CALENDAR_TIME_ZONE);
     expect(req.windowStart).toBe('2026-09-10');
     expect(req.windowEnd).toBe('2028-11-08');
     expect(req.events.map((d) => d.entryId).sort()).toEqual([a.id, b.id].sort());
     const da = req.events.find((d) => d.entryId === a.id)!;
     expect(da).toMatchObject({
-      title: '📷 Альфа',
+      title: 'Альфа',
       allDay: false,
       start: '2026-11-20T10:00',
       end: '2026-11-20T12:00',
@@ -106,7 +106,7 @@ describe('calendarAfterSync (Apps Script)', () => {
     const cal = gs.calendar();
     expect(store.getDoc().settings.calendar.calendarId).toBe(cal.id);
     expect(cal.live()).toHaveLength(2);
-    expect(cal.byEntry(a.id)!.title).toBe('📷 Альфа');
+    expect(cal.byEntry(a.id)!.title).toBe('Альфа');
     expect(gs.primary.events).toHaveLength(0);
 
     // повтор без изменений — в календаре ничего не пишется, настройки не трогаются
@@ -123,7 +123,7 @@ describe('calendarAfterSync (Apps Script)', () => {
     store.updateEntry(a.id, { title: 'A2', location: 'Old Town' });
     await sync.afterSync(client);
     const ev = gs.calendar().byEntry(a.id)!;
-    expect(ev.title).toBe('📷 A2');
+    expect(ev.title).toBe('A2');
     expect(ev.location).toBe('Old Town');
   });
 
@@ -195,7 +195,7 @@ describe('calendarAfterSync (Apps Script)', () => {
     // запись изменили — выгружаем снова
     store.updateEntry(a.id, { title: 'A2' });
     await sync.afterSync(client);
-    expect(cal.live().map((e) => e.title)).toEqual(['📷 A2']);
+    expect(cal.live().map((e) => e.title)).toEqual(['A2']);
     expect(await store.getMeta<Record<string, string>>(META_REMOVED)).toEqual({});
   });
 
@@ -205,7 +205,7 @@ describe('calendarAfterSync (Apps Script)', () => {
     sync.subscribeProposals((l) => seen.push(l));
 
     const cal = gs.calendar();
-    const u1 = cal.userCreateTimed('Фотосессия в порту', '2026-12-01T11:00', '2026-12-01T13:00', CALENDAR_TIME_ZONE, 'Harbor');
+    const u1 = cal.userCreateTimed('Встреча в порту', '2026-12-01T11:00', '2026-12-01T13:00', CALENDAR_TIME_ZONE, 'Harbor');
     const u2 = cal.userCreateAllDay('Отпуск', '2026-12-05', '2026-12-08');
     await sync.afterSync(client);
 
@@ -213,7 +213,7 @@ describe('calendarAfterSync (Apps Script)', () => {
     expect(list).toHaveLength(2);
     expect(list.find((p) => p.eventId === u1.id)).toEqual({
       eventId: u1.id,
-      title: 'Фотосессия в порту',
+      title: 'Встреча в порту',
       date: '2026-12-01',
       timeStart: '11:00',
       timeEnd: '13:00',
@@ -233,13 +233,13 @@ describe('calendarAfterSync (Apps Script)', () => {
 
     // импорт: запись с calendarEventId → скрипт помечает само чужое событие
     const e = proposalToEntry(list.find((p) => p.eventId === u1.id)!);
-    expect(e).toMatchObject({ type: 'main', kind: 'shoot', date: '2026-12-01', timeStart: '11:00', calendarEventId: u1.id });
+    expect(e).toMatchObject({ type: 'main', kind: 'job', date: '2026-12-01', timeStart: '11:00', calendarEventId: u1.id });
     store.upsertEntry(e);
     expect(sync.getProposals()).toHaveLength(0);
     await sync.afterSync(client);
     expect(cal.live()).toHaveLength(2);
     expect(u1.tags.wltEntry).toBe(e.id);
-    expect(u1.title).toBe('Фотосессия в порту');
+    expect(u1.title).toBe('Встреча в порту');
     expect(u1.tags.wltHash).toBe(lastReq().events.find((d) => d.entryId === e.id)!.hash);
 
     // отклонённое не возвращается
@@ -271,7 +271,7 @@ describe('calendarAfterSync (Apps Script)', () => {
 
   it('личное busy: «Занято» без подробностей', async () => {
     store.updateSettings({ calendar: { ...store.getDoc().settings.calendar, personalMode: 'busy' } });
-    add({ type: 'personal', kind: 'event', title: 'Врач', location: 'Клиника', media: [] });
+    add({ type: 'personal', kind: 'event', title: 'Врач', location: 'Клиника' });
     await sync.afterSync(client);
     const [ev] = gs.calendar().live();
     expect(ev.title).toBe('Занято');

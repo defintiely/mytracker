@@ -1,6 +1,8 @@
 // Импорт трекера из .ods (SPEC §9): лист = месяц, строка = запись, итог SUM — для сверки.
-import type { BuiltinType, Contact, Entry, EntryOrigin, EntryType, ISODate, Source, YearMonth } from '../model/types';
+import type { Contact, Entry, EntryOrigin, EntryType, ISODate, Settings, Source, YearMonth } from '../model/types';
+import { DEFAULT_CATEGORIES, DEFAULT_SETTINGS } from '../model/types';
 import { newEntry, newId, nowIso } from '../model/entry';
+import { defaultNoMoneyTypeId, defaultTypeId, typeHasMoney } from '../model/taskTypes';
 import { readOds } from './readOds';
 import type {
   ColorStat,
@@ -23,11 +25,9 @@ import {
   findCategory,
   findContactInfo,
   findInvoice,
-  findMedia,
   findPayment,
   findSource,
   findTimes,
-  findWithEditing,
   isTimeCellText,
   isoDate,
   monthFromWord,
@@ -240,12 +240,32 @@ interface SheetCtx {
   opts: ImportOptions;
   reg: Registry;
   colorVotes: Map<string, ColorAcc>;
+  types: ImportTypes;
+}
+
+/** Типы для импорта: флаг «с деньгами» и типы для строк без цвета. */
+interface ImportTypes {
+  /** Настройки-обёртка над типами (для typeHasMoney). */
+  settings: Settings;
+  moneyTypeId: EntryType;
+  noMoneyTypeId: EntryType;
+  categories: string[];
+}
+
+function importTypes(opts: ImportOptions): ImportTypes {
+  const settings: Settings = { ...DEFAULT_SETTINGS, taskTypes: opts.taskTypes ?? DEFAULT_SETTINGS.taskTypes };
+  return {
+    settings,
+    moneyTypeId: opts.moneyTypeId ?? defaultTypeId(settings),
+    noMoneyTypeId: opts.noMoneyTypeId ?? defaultNoMoneyTypeId(settings),
+    categories: opts.categories ?? DEFAULT_CATEGORIES,
+  };
 }
 
 interface ColorAcc {
   count: number;
   samples: string[];
-  votes: Record<BuiltinType, number>;
+  withMoney: number;
 }
 
 interface RowOutput {
@@ -345,7 +365,7 @@ function parseRow(input: RowParseInput, ctx: SheetCtx): RowOutput | { skip: stri
 
   // 4. Дата.
   const titleText = titleCell ? titleCell.text : '';
-  // Под итогом «2-4 короткие видео» — пункт чек-листа, а не дни 2–4: там дата только с месяцем.
+  // Под итогом «2-4 коротких текста» — пункт чек-листа, а не дни 2–4: там дата только с месяцем.
   const dp = parseDatePrefix(titleText, ctx.year, ctx.month, { allowBareRange: !afterTotal });
   let titleRest = normalizeTimeText(dp.rest);
 
@@ -417,7 +437,7 @@ function parseRow(input: RowParseInput, ctx: SheetCtx): RowOutput | { skip: stri
     if ((ci.phones.length || ci.channels.length) && i !== titleIdx) {
       const srcSpans = sourceMatch ? findSource(t.text, ctx.reg.allSources())?.spans ?? [] : [];
       const name = contactNameFrom(cutText(t.text, srcSpans), findContactInfo(cutText(t.text, srcSpans)));
-      if (name && !contactName && !findCategory(name) && !/видео|фото|съ[её]мк/i.test(name)) contactName = name;
+      if (name && !contactName && !findCategory(name, ctx.types.categories)) contactName = name;
       const leftover = cleanText(cutText(t.text, [...ci.spans, ...srcSpans]).replace(name ?? '\u0000', ' '));
       if (!leftover || isTokenOnly(leftover)) contactCellIdx.add(i);
     }
@@ -428,7 +448,7 @@ function parseRow(input: RowParseInput, ctx: SheetCtx): RowOutput | { skip: stri
     if (!contactName) {
       // имя — в соседней слева текстовой ячейке: «мама Анны Марии | 99000004»
       const left = texts.find((t, i) => t.idx === pc.idx - 1 && i !== titleIdx);
-      if (left && left.text.split(' ').length <= 4 && !/\d/.test(left.text) && !findCategory(left.text)) {
+      if (left && left.text.split(' ').length <= 4 && !/\d/.test(left.text) && !findCategory(left.text, ctx.types.categories)) {
         contactName = left.text;
         contactCellIdx.add(texts.indexOf(left));
       }
@@ -444,26 +464,26 @@ function parseRow(input: RowParseInput, ctx: SheetCtx): RowOutput | { skip: stri
     hasSource: !!sourceMatch,
     hasInvoice: !!invoiceNo,
     hasPhone: phones.length > 0,
-    title: titleText,
     afterTotal,
+    categories: ctx.types.categories,
   });
-  let { kind, type } = cls;
-  const heuristicType = type;
+  let { kind } = cls;
+  // Без цвета (или цвет «по тексту»): тип — по признаку денег.
+  let type: EntryType = cls.money ? ctx.types.moneyTypeId : ctx.types.noMoneyTypeId;
   if (cls.guessed) issues.push('Тип угадан: нет суммы и явных признаков работы');
   const colorRole = rowColor ? ctx.opts.colorMap?.[rowColor] : undefined;
   const important = colorRole === 'important';
-  const noMoneyTypes = ctx.opts.noMoneyTypes ?? ['personal'];
-  const isNoMoney = (t: string) => noMoneyTypes.includes(t);
+  const isNoMoney = (t: EntryType) => !typeHasMoney(ctx.types.settings, t);
   if (colorRole && colorRole !== 'important') {
     type = colorRole;
     if (!afterTotal) {
-      if (!isNoMoney(type) && kind === 'event') kind = 'shoot';
+      if (!isNoMoney(type) && kind === 'event') kind = 'job';
       if (!isNoMoney(type) && kind === 'note') kind = 'work';
-      if (isNoMoney(type) && kind === 'shoot' && amount === undefined) kind = 'event';
+      if (isNoMoney(type) && kind === 'job' && amount === undefined) kind = 'event';
     }
   }
   const noMoney = isNoMoney(type);
-  if (noMoney && amount !== undefined && amount !== 0) issues.push('Личное дело с суммой');
+  if (noMoney && amount !== undefined && amount !== 0) issues.push('Дело без денег с суммой');
 
   // 8. Источник и деньги.
   let sourceId: string | undefined;
@@ -514,23 +534,16 @@ function parseRow(input: RowParseInput, ctx: SheetCtx): RowOutput | { skip: stri
 
   // 11. Прочие пометки.
   if (!dp.date && /^\s*\d{1,2}(?![\d.:])\s+\p{L}/u.test(titleText) && !afterTotal) issues.push('Дата не распознана');
-  if (kind === 'shoot' && amount === undefined && !noMoney) issues.push('Нет суммы');
-  if (!dp.date && kind === 'work' && !/(ретуш|обработ|обр\b|слайдшоу|монтаж|правки)/i.test(allText) && !afterTotal) {
-    issues.push('Без даты: засчитано как работа месяца');
-  }
+  if (kind === 'job' && amount === undefined && !noMoney) issues.push('Нет суммы');
+  // Строка без даты с суммой — обычная «работа без даты» месяца листа; пометка — только когда суммы нет.
+  if (!dp.date && kind === 'work' && amount === undefined && !afterTotal) issues.push('Без даты: засчитано как работа месяца');
   if (time.timeNote === 'уточнить' || /\?/.test(titleText.slice(0, 8))) {
     // это поле, не ошибка
   }
 
   const tentative =
     dp.tentative || /(?<![\p{L}])(под\s+вопросом|уточнить)(?![\p{L}])/iu.test(allText) || /\?\s*$/.test(titleText);
-  const category =
-    noMoney
-      ? undefined
-      : kind === 'work' && /(ретуш|обработ|слайдшоу|монтаж|(?<![\p{L}])обр(?![\p{L}]))/iu.test(titleText)
-        ? 'ретушь'
-        : findCategory(allText);
-  const withEditing = findWithEditing(allText);
+  const category = noMoney ? undefined : findCategory(allText, ctx.types.categories);
 
   const contact = noMoney && !phones.length ? undefined : ctx.reg.contact(contactName, phones, channels);
 
@@ -540,7 +553,6 @@ function parseRow(input: RowParseInput, ctx: SheetCtx): RowOutput | { skip: stri
     title,
     dateTentative: tentative,
     allDay: !time.timeStart,
-    media: findMedia(allText),
     currency: 'EUR',
     money,
     checklist: [],
@@ -553,7 +565,6 @@ function parseRow(input: RowParseInput, ctx: SheetCtx): RowOutput | { skip: stri
   if (time.timeNote) partial.timeNote = time.timeNote;
   if (mapUrl) partial.mapUrl = mapUrl;
   if (category) partial.category = category;
-  if (withEditing !== undefined) partial.withEditing = withEditing;
   if (amount !== undefined) partial.amount = amount;
   if (invoiceNo) partial.invoiceNo = invoiceNo;
   if (accountingMonth) partial.accountingMonth = accountingMonth;
@@ -563,7 +574,7 @@ function parseRow(input: RowParseInput, ctx: SheetCtx): RowOutput | { skip: stri
   if (noteParts.length) partial.notes = noteParts.join(' · ');
   partial.status = statusFor({
     kind,
-    type,
+    hasMoney: !noMoney,
     date: dp.date,
     dateEnd: dp.dateEnd,
     accountingMonth,
@@ -572,18 +583,18 @@ function parseRow(input: RowParseInput, ctx: SheetCtx): RowOutput | { skip: stri
     cancelled: pay.cancelled,
     today: ctx.today,
   });
-  const entry = newEntry(partial);
+  const entry = newEntry(partial, ctx.types.settings);
 
   // Статистика цветов (только цвет строки — ячейки названия).
   if (rowColor) {
     let acc = ctx.colorVotes.get(rowColor);
     if (!acc) {
-      acc = { count: 0, samples: [], votes: { main: 0, joint: 0, personal: 0 } };
+      acc = { count: 0, samples: [], withMoney: 0 };
       ctx.colorVotes.set(rowColor, acc);
     }
     acc.count++;
     if (acc.samples.length < 5) acc.samples.push(input.raw);
-    acc.votes[heuristicType as BuiltinType]++;
+    if (cls.money) acc.withMoney++;
   }
 
   return {
@@ -613,6 +624,7 @@ export function importOds(data: Uint8Array, opts: ImportOptions = {}): ImportRes
   const skipped: SkippedRow[] = [];
   const monthChecks: MonthCheck[] = [];
   const colorVotes = new Map<string, ColorAcc>();
+  const types = importTypes(opts);
   const seenRaw = new Map<string, string>(); // сырой текст строки данных → первый лист
 
   wb.sheets.forEach((sheet, si) => {
@@ -635,6 +647,7 @@ export function importOds(data: Uint8Array, opts: ImportOptions = {}): ImportRes
       opts,
       reg,
       colorVotes,
+      types,
     };
     const data = dataRowsOf(sheet, sum);
 
@@ -746,10 +759,7 @@ export function importOds(data: Uint8Array, opts: ImportOptions = {}): ImportRes
   linkPrepayments(rows);
 
   const colors: ColorStat[] = [...colorVotes.entries()]
-    .map(([color, acc]) => {
-      const suggested = (Object.entries(acc.votes) as [EntryType, number][]).sort((a, b) => b[1] - a[1])[0];
-      return { color, count: acc.count, samples: acc.samples, suggested: suggested[1] > 0 ? suggested[0] : undefined };
-    })
+    .map(([color, acc]) => ({ color, count: acc.count, samples: acc.samples, withMoney: acc.withMoney }))
     .sort((a, b) => b.count - a.count);
 
   return { rows, contacts: reg.newContacts, sources: reg.newSources, colors, monthChecks, skipped };
@@ -766,12 +776,12 @@ function sideCellsWithAmountGap(cells: OdsCell[], amountCol: number): OdsCell[] 
   return out;
 }
 
-/** «Предоплата за 1.09» → relatedEntryId на съёмку этой даты (ближайшую не раньше месяца предоплаты). */
+/** «Предоплата за 1.09» → relatedEntryId на задачу этой даты (ближайшую не раньше месяца предоплаты). */
 function linkPrepayments(rows: ImportedRow[]): void {
   const byDate = new Map<string, Entry[]>();
   for (const r of rows) {
     const e = r.entry;
-    if (e.date && (e.kind === 'shoot' || e.kind === 'work')) {
+    if (e.date && (e.kind === 'job' || e.kind === 'work')) {
       const list = byDate.get(e.date) ?? [];
       list.push(e);
       byDate.set(e.date, list);
