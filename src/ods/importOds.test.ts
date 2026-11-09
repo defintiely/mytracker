@@ -123,6 +123,24 @@ describe('importOds на синтетическом файле', () => {
     expect(r.rows[0].entry.type).toBe('joint');
   });
 
+  test('colorMap на свой тип: с деньгами — как работа, без денег — как личное', () => {
+    const withMoney = importOds(data, { today: '2026-11-09', colorMap: { '#ffff00': 'edu' } });
+    const row = withMoney.rows[0].entry;
+    expect(row.type).toBe('edu');
+    expect(row.amount).toBeDefined();
+    const noMoney = importOds(data, {
+      today: '2026-11-09',
+      colorMap: { '#ffff00': 'fam' },
+      noMoneyTypes: ['personal', 'fam'],
+    });
+    const r = noMoney.rows[0];
+    expect(r.entry.type).toBe('fam');
+    expect(r.entry.sourceId).toBeUndefined();
+    expect(r.entry.category).toBeUndefined();
+    expect(r.issues).toContain('Личное дело с суммой');
+    expect(withMoney.rows[0].issues).not.toContain('Личное дело с суммой');
+  });
+
   test('повторный импорт не дублирует', () => {
     const keys = new Set(res.rows.map((r) => originKey(r.entry.origin!)));
     const again = importOds(data, { today: '2026-11-09', existingOriginKeys: keys, existingContacts: res.contacts, existingSources: res.sources });

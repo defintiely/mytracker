@@ -6,8 +6,27 @@ export type ISODate = string;      // 'YYYY-MM-DD'
 export type ISODateTime = string;  // new Date().toISOString()
 export type YearMonth = string;    // 'YYYY-MM'
 
-/** Тип задачи — задаёт цвет записи везде. */
-export type EntryType = 'main' | 'joint' | 'personal';
+/** Встроенные типы задач: есть всегда, на них опираются импорт и парсер. */
+export type BuiltinType = 'main' | 'joint' | 'personal';
+
+/**
+ * Тип задачи — id из Settings.taskTypes (встроенный 'main' | 'joint' | 'personal' или свой).
+ * Задаёт цвет записи везде.
+ */
+export type EntryType = string;
+
+/** Определение типа задачи (настраивается в «Настройках»). */
+export interface TaskTypeDef {
+  id: string;
+  name: string;
+  color: string;
+  /** Тип с деньгами: показывает поля денег и входит в оборот. */
+  money: boolean;
+  /** Встроенный тип (main/joint/personal): удалить нельзя, флаг money не меняется. */
+  builtin?: boolean;
+  /** Tombstone: тип удалён (чтобы синхронизация не вернула его). */
+  deleted?: boolean;
+}
 
 /** Вид записи. */
 export type EntryKind = 'shoot' | 'work' | 'payment' | 'event' | 'note';
@@ -114,6 +133,7 @@ export interface Source {
   deleted?: boolean;
 }
 
+/** @deprecated Заменено Settings.taskTypes; читается только при миграции старых документов. */
 export interface TypeColors {
   main: string;
   joint: string;
@@ -124,7 +144,10 @@ export interface Settings {
   /** Грубая оценка чистого дохода после налогов: оборот × netFactor. */
   netFactor: number;
   categories: string[];
-  typeColors: TypeColors;
+  /** Типы задач (встроенные + свои). Читать через taskTypes()/typeDef() из model/taskTypes. */
+  taskTypes: TaskTypeDef[];
+  /** @deprecated Старое поле цветов трёх типов; не используется, читается только при миграции. */
+  typeColors?: TypeColors;
   /** Код страны для номеров без кода (например '44') — для ссылок WhatsApp/Telegram. */
   phoneCountryCode?: string;
   /** Порог «деньги у посредника слишком долго», дней. */
@@ -172,7 +195,11 @@ export const DEFAULT_CATEGORIES = [
 export const DEFAULT_SETTINGS: Settings = {
   netFactor: 0.67,
   categories: DEFAULT_CATEGORIES,
-  typeColors: { main: '#a5d6a7', joint: '#80deea', personal: '#fff59d' },
+  taskTypes: [
+    { id: 'main', name: 'Основная работа', color: '#a5d6a7', money: true, builtin: true },
+    { id: 'joint', name: 'Совместная работа', color: '#80deea', money: true, builtin: true },
+    { id: 'personal', name: 'Личное', color: '#fff59d', money: false, builtin: true },
+  ],
   intermediaryOverdueDays: 14,
   calendar: {
     enabled: false,
@@ -195,7 +222,8 @@ export const STATUS_LABELS: Record<EntryStatus, string> = {
   cancelled: 'Отменено',
 };
 
-export const TYPE_LABELS: Record<EntryType, string> = {
+/** Названия встроенных типов по умолчанию (текущие названия — typeName() из model/taskTypes). */
+export const TYPE_LABELS: Record<BuiltinType, string> = {
   main: 'Основная работа',
   joint: 'Совместная работа',
   personal: 'Личное',

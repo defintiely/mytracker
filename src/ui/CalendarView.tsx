@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { Entry, ISODate, TrackerDoc } from '../model/types';
 import { MONTH_NAMES_RU } from '../model/entry';
+import { typeColor } from '../model/taskTypes';
 import { store } from '../store/store';
 import { useTracker } from '../store/useTracker';
 import type { CalendarProposal } from '../calendar/calendarSync';
@@ -158,7 +159,7 @@ function CalEvent({ e, doc, overlap, compact }: { e: Entry; doc: TrackerDoc; ove
     <button
       type="button"
       className={'cal-ev' + (e.dateTentative ? ' tentative' : '') + (overlap ? ' overlap' : '')}
-      style={{ ['--tc' as string]: doc.settings.typeColors[e.type] }}
+      style={{ ['--tc' as string]: typeColor(doc.settings, e.type) }}
       onClick={() => ui.openEntry(e.id)}
       title={(e.timeStart ? e.timeStart + ' ' : '') + e.title + (overlap ? ' — пересечение по времени!' : '')}
     >

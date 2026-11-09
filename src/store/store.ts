@@ -4,6 +4,7 @@
 import { openDB, type IDBPDatabase } from 'idb';
 import type { Contact, Entry, Settings, Source, TrackerDoc } from '../model/types';
 import { emptyDoc, nowIso, patchEntry } from '../model/entry';
+import { normalizeTaskTypes } from '../model/taskTypes';
 
 const DB_NAME = 'work-life-tracker';
 const DB_VERSION = 1;
@@ -168,7 +169,7 @@ function upsertById<T extends { id: string }>(list: T[], item: T): T[] {
   return copy;
 }
 
-function migrate(doc: TrackerDoc): TrackerDoc {
+export function migrate(doc: TrackerDoc): TrackerDoc {
   const base = emptyDoc();
   return {
     ...base,
@@ -176,6 +177,8 @@ function migrate(doc: TrackerDoc): TrackerDoc {
     settings: {
       ...base.settings,
       ...doc.settings,
+      // Старые документы без taskTypes: типы из typeColors и названий по умолчанию.
+      taskTypes: normalizeTaskTypes(doc.settings),
       calendar: { ...base.settings.calendar, ...(doc.settings?.calendar ?? {}) },
     },
   };

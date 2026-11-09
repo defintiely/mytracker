@@ -1,8 +1,9 @@
 // Мастер импорта .ods (SPEC §9): файл → сопоставление «цвет → тип» → проверка распознанного → импорт.
 import { useMemo, useState } from 'react';
-import type { Entry, EntryStatus, EntryType, Source, TrackerDoc } from '../model/types';
-import { KIND_LABELS, STATUS_LABELS, TYPE_LABELS } from '../model/types';
+import type { Entry, EntryStatus, Source, TrackerDoc } from '../model/types';
+import { KIND_LABELS, STATUS_LABELS } from '../model/types';
 import { formatEUR, monthLabel } from '../model/entry';
+import { taskTypes, typeColor, typeHasMoney, typeName, typeOptions } from '../model/taskTypes';
 import type { ColorRole, ImportOptions, ImportResult, ImportedRow } from '../ods/types';
 import { importOds } from '../ods/importOds';
 import { store } from '../store/store';
@@ -40,6 +41,9 @@ export function ImportWizard() {
     existingSources: doc.sources,
     existingContacts: doc.contacts,
     existingOriginKeys: originKeys(doc),
+    noMoneyTypes: taskTypes(doc.settings)
+      .filter((t) => !t.money)
+      .map((t) => t.id),
   });
 
   const reset = () => {
@@ -179,7 +183,9 @@ export function ImportWizard() {
                 <div className="color-info">
                   <div>
                     <b>{c.count}</b> строк · <code>{c.color}</code>
-                    {c.suggested && <span className="muted small"> · предложено: {TYPE_LABELS[c.suggested]}</span>}
+                    {c.suggested && (
+                      <span className="muted small"> · предложено: {typeName(doc.settings, c.suggested)}</span>
+                    )}
                   </div>
                   <ul className="samples">
                     {c.samples.slice(0, 5).map((s, i) => (
@@ -193,9 +199,9 @@ export function ImportWizard() {
                   onChange={(e) => setColorMap({ ...colorMap, [c.color]: e.target.value as ColorRole | '' })}
                 >
                   <option value="">по тексту строки</option>
-                  {(Object.keys(TYPE_LABELS) as EntryType[]).map((t) => (
-                    <option key={t} value={t}>
-                      {TYPE_LABELS[t]}
+                  {taskTypes(doc.settings).map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
                     </option>
                   ))}
                   <option value="important">не тип — пометка «важно»</option>
@@ -261,7 +267,7 @@ function SettleBefore(props: { rows: ImportedRow[]; patchRow: (i: number, p: Par
     props.rows.forEach((r, i) => {
       const e = r.entry;
       const when = e.date ?? (e.accountingMonth ? e.accountingMonth + '-01' : undefined);
-      if (!when || when >= before || e.type === 'personal' || !e.amount) return;
+      if (!when || when >= before || !typeHasMoney(store.getDoc().settings, e.type) || !e.amount) return;
       const settled = e.money.every((m) => m.where === 'owner');
       if (settled && e.status === 'done') return;
       const method = e.money.find((m) => m.method)?.method;
@@ -315,6 +321,7 @@ function Review(props: {
   };
   const includedCount = rows.length - excluded.size;
   const docSources = sources;
+  const settings = store.getDoc().settings;
 
   return (
     <div className="review">
@@ -356,11 +363,11 @@ function Review(props: {
         {selected.size > 0 && (
           <div className="bulk row gap wrap">
             <span className="muted small">Выделено {selected.size}:</span>
-            <select aria-label="Тип выделенным" value="" onChange={(e) => e.target.value && props.bulk(() => ({ type: e.target.value as EntryType }))}>
+            <select aria-label="Тип выделенным" value="" onChange={(e) => e.target.value && props.bulk(() => ({ type: e.target.value }))}>
               <option value="">тип…</option>
-              {(Object.keys(TYPE_LABELS) as EntryType[]).map((t) => (
-                <option key={t} value={t}>
-                  {TYPE_LABELS[t]}
+              {taskTypes(settings).map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
                 </option>
               ))}
             </select>
@@ -431,7 +438,7 @@ function Review(props: {
                 <tr
                   key={i}
                   className={(r.confidence === 'low' ? 'low ' : '') + (excluded.has(i) ? 'excluded' : '')}
-                  style={{ ['--tc' as string]: store.getDoc().settings.typeColors[e.type] }}
+                  style={{ ['--tc' as string]: typeColor(settings, e.type) }}
                 >
                   <td>
                     <input
@@ -446,10 +453,10 @@ function Review(props: {
                   </td>
                   <td className="raw">{e.origin?.raw}</td>
                   <td className="type-cell">
-                    <select value={e.type} aria-label="Тип" onChange={(ev) => props.patchRow(i, { type: ev.target.value as EntryType })}>
-                      {(Object.keys(TYPE_LABELS) as EntryType[]).map((t) => (
-                        <option key={t} value={t}>
-                          {TYPE_LABELS[t]}
+                    <select value={e.type} aria-label="Тип" onChange={(ev) => props.patchRow(i, { type: ev.target.value })}>
+                      {typeOptions(settings, e.type).map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name}
                         </option>
                       ))}
                     </select>
@@ -468,7 +475,7 @@ function Review(props: {
                   </td>
                   <td className="small">{KIND_LABELS[e.kind]}</td>
                   <td>
-                    {e.type === 'personal' ? (
+                    {!typeHasMoney(settings, e.type) ? (
                       ''
                     ) : (
                       <CommitInput

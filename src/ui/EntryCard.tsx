@@ -1,8 +1,9 @@
 // Карточка записи: все поля Entry. Существующая запись правится сразу в store, новая — черновиком до «Создать».
 import { useState } from 'react';
-import type { ChecklistItem, Contact, Entry, EntryKind, EntryStatus, EntryType, Media, TrackerDoc } from '../model/types';
-import { KIND_LABELS, STATUS_LABELS, TYPE_LABELS } from '../model/types';
+import type { ChecklistItem, Contact, Entry, EntryKind, EntryStatus, Media, TrackerDoc } from '../model/types';
+import { KIND_LABELS, STATUS_LABELS } from '../model/types';
 import { newId, patchEntry } from '../model/entry';
+import { typeColor, typeHasMoney, typeOptions } from '../model/taskTypes';
 import { store } from '../store/store';
 import { useTracker } from '../store/useTracker';
 import { CommitInput, CommitTextarea, Modal, PayIcon, StatusBadge, parseAmount, useIsMobile } from './common';
@@ -46,8 +47,9 @@ export function EntryCard({
     }
   };
 
-  const personal = e.type === 'personal';
-  const color = doc.settings.typeColors[e.type];
+  const personal = !typeHasMoney(doc.settings, e.type);
+  const color = typeColor(doc.settings, e.type);
+  const typeChoices = typeOptions(doc.settings, e.type);
   const locations = uniqueSorted(doc.entries.map((x) => x.location));
   const categories = uniqueSorted([...doc.settings.categories, ...doc.entries.map((x) => x.category)]);
 
@@ -60,7 +62,7 @@ export function EntryCard({
           <span className="type-strip-mini" style={{ background: color }} />
           {isNew ? 'Новая запись' : 'Запись'}
           {!isNew && <StatusBadge status={e.status} />}
-          {!isNew && <PayIcon entry={e} />}
+          {!isNew && <PayIcon entry={e} settings={doc.settings} />}
         </span>
       }
       footer={
@@ -101,16 +103,17 @@ export function EntryCard({
         <div className="field">
           <label>Тип</label>
           <div className="seg">
-            {(Object.keys(TYPE_LABELS) as EntryType[]).map((t) => (
+            {typeChoices.map((t) => (
               <button
                 type="button"
-                key={t}
-                className={'seg-btn' + (e.type === t ? ' on' : '')}
-                style={{ ['--tc' as string]: doc.settings.typeColors[t] }}
-                onClick={() => apply({ type: t, ...(t === 'personal' && e.kind === 'shoot' ? { kind: 'event' } : {}) })}
+                key={t.id}
+                className={'seg-btn' + (e.type === t.id ? ' on' : '')}
+                aria-pressed={e.type === t.id}
+                style={{ ['--tc' as string]: t.color }}
+                onClick={() => apply({ type: t.id, ...(!t.money && e.kind === 'shoot' ? { kind: 'event' } : {}) })}
               >
-                <span className="type-dot" style={{ background: doc.settings.typeColors[t] }} />
-                {TYPE_LABELS[t]}
+                <span className="type-dot" style={{ background: t.color }} />
+                {t.name}
               </button>
             ))}
           </div>

@@ -2,6 +2,7 @@
 import { useMemo, useState } from 'react';
 import type { Entry, TrackerDoc } from '../model/types';
 import { formatEUR, moneyTotal } from '../model/entry';
+import { typeHasMoney } from '../model/taskTypes';
 import { store } from '../store/store';
 import { useTracker } from '../store/useTracker';
 import { EntryMini } from './EntryMini';
@@ -15,9 +16,11 @@ interface HolderGroup {
 }
 
 export function moneyGroups(doc: TrackerDoc) {
-  const live = doc.entries.filter((e) => !e.deleted && e.status !== 'cancelled' && e.type !== 'personal');
+  const live = doc.entries.filter(
+    (e) => !e.deleted && e.status !== 'cancelled' && typeHasMoney(doc.settings, e.type),
+  );
   const clients = live
-    .map((e) => ({ e, amount: atClient(e) }))
+    .map((e) => ({ e, amount: atClient(e, doc.settings) }))
     .filter((x) => x.amount > 0)
     .sort((a, b) => (a.e.date ?? '9999').localeCompare(b.e.date ?? '9999'));
   const holders = new Map<string, HolderGroup>();

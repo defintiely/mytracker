@@ -9,6 +9,7 @@ import type {
   YearMonth,
 } from './types';
 import { DEFAULT_SETTINGS } from './types';
+import { taskTypes, typeDef as typeDefOf, typeHasMoney } from './taskTypes';
 
 export function newId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
@@ -58,8 +59,10 @@ export function moneyTotal(parts: MoneyPart[], where?: MoneyPart['where']): numb
   return parts.filter((p) => !where || p.where === where).reduce((s, p) => s + p.amount, 0);
 }
 
-export function payState(e: Pick<Entry, 'amount' | 'money' | 'type'>): PayState {
-  if (e.type === 'personal' || !e.amount) return 'none';
+/** settings не передан — «без денег» только встроенный personal. */
+export function payState(e: Pick<Entry, 'amount' | 'money' | 'type'>, settings?: Settings): PayState {
+  const noMoney = settings ? !typeHasMoney(settings, e.type) : e.type === 'personal';
+  if (noMoney || !e.amount) return 'none';
   const owner = moneyTotal(e.money, 'owner');
   const inter = moneyTotal(e.money, 'intermediary');
   const client = e.amount - owner - inter;
@@ -78,7 +81,11 @@ export interface MonthTotals {
   month: YearMonth;
   turnover: number;
   net: number;
+  /** Оборот по каждому типу с деньгами (id типа → сумма). Оборот = сумма byType. */
+  byType: Record<string, number>;
+  /** @deprecated Производное: byType.main (для совместимости). */
   main: number;
+  /** @deprecated Производное: byType.joint (для совместимости). */
   joint: number;
   received: number;
   atIntermediary: number;
@@ -92,6 +99,7 @@ export function monthTotals(entries: Entry[], month: YearMonth, settings: Settin
     month,
     turnover: 0,
     net: 0,
+    byType: {},
     main: 0,
     joint: 0,
     received: 0,
@@ -100,9 +108,10 @@ export function monthTotals(entries: Entry[], month: YearMonth, settings: Settin
     shoots: 0,
   };
   for (const e of list) {
-    if (e.type === 'personal') continue;
+    if (!typeHasMoney(settings, e.type)) continue;
     const a = e.amount ?? 0;
     t.turnover += a;
+    t.byType[e.type] = (t.byType[e.type] ?? 0) + a;
     if (e.type === 'main') t.main += a;
     if (e.type === 'joint') t.joint += a;
     const owner = moneyTotal(e.money, 'owner');
@@ -114,6 +123,38 @@ export function monthTotals(entries: Entry[], month: YearMonth, settings: Settin
   }
   t.net = Math.round(t.turnover * settings.netFactor * 100) / 100;
   return t;
+}
+
+export interface TypeAmount {
+  id: string;
+  name: string;
+  color: string;
+  amount: number;
+}
+
+/**
+ * Разбивка оборота по типам с деньгами для показа: встроенные main/joint всегда,
+ * свои — если по ним есть сумма или allTypes; плюс суммы по неизвестным/удалённым id.
+ */
+export function turnoverByType(
+  settings: Settings,
+  byType: Record<string, number>,
+  opts: { allTypes?: boolean } = {},
+): TypeAmount[] {
+  const out: TypeAmount[] = [];
+  const seen = new Set<string>();
+  for (const t of taskTypes(settings)) {
+    if (!t.money) continue;
+    seen.add(t.id);
+    const amount = byType[t.id] ?? 0;
+    if (opts.allTypes || t.builtin || amount !== 0) out.push({ id: t.id, name: t.name, color: t.color, amount });
+  }
+  for (const [id, amount] of Object.entries(byType)) {
+    if (seen.has(id) || amount === 0) continue;
+    const d = typeDefOf(settings, id);
+    out.push({ id, name: d.name, color: d.color, amount });
+  }
+  return out;
 }
 
 /** Обновить запись с проставлением updatedAt и fieldUpdatedAt по изменённым полям. */

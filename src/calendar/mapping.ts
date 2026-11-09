@@ -1,6 +1,7 @@
 // Чистые функции: запись трекера ↔ событие Google Календаря (SPEC §10).
 import type { Entry, TrackerDoc } from '../model/types';
 import { formatEUR } from '../model/entry';
+import { typeColor, typeHasMoney } from '../model/taskTypes';
 import type { DesiredEvent, ForeignEvent, MovedEvent } from '../sync/scriptApi';
 
 /** Часовой пояс устройства: в нём выгружаются события со временем и создаётся календарь. */
@@ -243,14 +244,14 @@ function telLink(phone: string): string {
   return `<a href="tel:${num}">${escapeHtml(phone)}</a>`;
 }
 
-function buildTitle(e: Entry, busy: boolean): string {
+function buildTitle(e: Entry, busy: boolean, withMoney: boolean): string {
   let title: string;
   if (busy) {
     title = BUSY_TITLE;
   } else {
     const base = e.title.trim() || e.category || (e.kind === 'event' ? 'Дело' : 'Съёмка');
     let icons = '';
-    if (e.type !== 'personal') {
+    if (withMoney) {
       if (e.media.includes('photo')) icons += ICON_PHOTO;
       if (e.media.includes('video')) icons += ICON_VIDEO;
     }
@@ -263,7 +264,7 @@ function buildTitle(e: Entry, busy: boolean): string {
 
 function buildDescription(e: Entry, doc: TrackerDoc): string | undefined {
   const lines: string[] = [];
-  const includeMoney = doc.settings.calendar.includeMoney && e.type !== 'personal';
+  const includeMoney = doc.settings.calendar.includeMoney && typeHasMoney(doc.settings, e.type);
   if (e.category) lines.push('Категория: ' + escapeHtml(e.category));
   const contact = e.contactId ? doc.contacts.find((c) => c.id === e.contactId && !c.deleted) : undefined;
   if (contact) {
@@ -288,7 +289,8 @@ function buildDescription(e: Entry, doc: TrackerDoc): string | undefined {
 function isExportable(e: Entry, doc: TrackerDoc): boolean {
   if (e.deleted || !e.date) return false;
   if (e.kind !== 'shoot' && e.kind !== 'event') return false;
-  if (e.type === 'personal' && doc.settings.calendar.personalMode === 'skip') return false;
+  // Режим «личного» применяется ко всем типам без денег.
+  if (!typeHasMoney(doc.settings, e.type) && doc.settings.calendar.personalMode === 'skip') return false;
   return true;
 }
 
@@ -302,14 +304,15 @@ export function entryToEvent(entry: Entry, doc: TrackerDoc): GCalEvent | null {
   if (entry.status === 'cancelled' && cal.onCancel === 'delete') return null;
   const when = entryWhen(entry);
   if (!when) return null;
-  const busy = entry.type === 'personal' && cal.personalMode === 'busy';
+  const withMoney = typeHasMoney(doc.settings, entry.type);
+  const busy = !withMoney && cal.personalMode === 'busy';
 
   const minutes = [...new Set(cal.reminderMinutes.filter((m) => Number.isFinite(m) && m >= 0 && m <= 40320))]
     .sort((a, b) => b - a)
     .slice(0, 5);
 
   const body: GCalEvent = {
-    summary: buildTitle(entry, busy),
+    summary: buildTitle(entry, busy, withMoney),
     start: when.start,
     end: when.end,
     reminders: { useDefault: false, overrides: minutes.map((m) => ({ method: 'popup', minutes: m })) },
@@ -319,7 +322,7 @@ export function entryToEvent(entry: Entry, doc: TrackerDoc): GCalEvent | null {
     const description = buildDescription(entry, doc);
     if (description) body.description = description;
   }
-  const colorId = nearestColorId(doc.settings.typeColors[entry.type]);
+  const colorId = nearestColorId(typeColor(doc.settings, entry.type));
   if (colorId) body.colorId = colorId;
 
   body.extendedProperties = {

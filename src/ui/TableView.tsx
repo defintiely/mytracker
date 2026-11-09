@@ -8,8 +8,8 @@ import {
   type ColumnVisibilityState,
 } from '@tanstack/react-table';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import type { Entry, EntryKind, EntryStatus, EntryType, Media, TrackerDoc } from '../model/types';
-import { KIND_LABELS, STATUS_LABELS, TYPE_LABELS } from '../model/types';
+import type { Entry, EntryKind, EntryStatus, EntryType, Media, Settings, TrackerDoc } from '../model/types';
+import { KIND_LABELS, STATUS_LABELS } from '../model/types';
 import {
   entryMonth,
   formatEUR,
@@ -17,9 +17,11 @@ import {
   monthTotals,
   nowIso,
   payState,
+  turnoverByType,
   type MonthTotals,
   type PayState,
 } from '../model/entry';
+import { taskTypes, typeColor, typeHasMoney, typeName, typeOptions } from '../model/taskTypes';
 import { store } from '../store/store';
 import { useTracker } from '../store/useTracker';
 import { PayIcon, StatusBadge, parseAmount, useIsMobile, useUi } from './common';
@@ -128,7 +130,7 @@ export function applyFilters(doc: TrackerDoc, f: Filters): Entry[] {
     if (f.to && (!m || m > f.to)) return false;
     if (f.types.length && !f.types.includes(e.type)) return false;
     if (f.kind && e.kind !== f.kind) return false;
-    if (f.pay && payState(e) !== f.pay) return false;
+    if (f.pay && payState(e, doc.settings) !== f.pay) return false;
     if (f.source === '__none' && e.sourceId) return false;
     if (f.source && f.source !== '__none' && e.sourceId !== f.source) return false;
     if (q) {
@@ -289,14 +291,14 @@ function FilterBar({
             <input type="month" value={f.to} onChange={(e) => set({ to: e.target.value })} />
           </label>
           <div className="filter-types">
-            {(Object.keys(TYPE_LABELS) as EntryType[]).map((t) => (
-              <label key={t} className="check chip-check" style={{ ['--tc' as string]: doc.settings.typeColors[t] }}>
+            {taskTypes(doc.settings).map(({ id: t, name, color }) => (
+              <label key={t} className="check chip-check" style={{ ['--tc' as string]: color }}>
                 <input
                   type="checkbox"
                   checked={f.types.includes(t)}
                   onChange={(e) => set({ types: e.target.checked ? [...f.types, t] : f.types.filter((x) => x !== t) })}
                 />
-                <span className="type-dot" style={{ background: doc.settings.typeColors[t] }} /> {TYPE_LABELS[t]}
+                <span className="type-dot" style={{ background: color }} /> {name}
               </label>
             ))}
           </div>
@@ -435,7 +437,7 @@ function Grid({ items, cols, doc }: { items: Item[]; cols: ColMeta[]; doc: Track
             if (it.k === 'total')
               return (
                 <div key={vi.key} className="grid-total" style={style} data-index={vi.index} ref={virtualizer.measureElement}>
-                  <TotalsLine t={it.t} />
+                  <TotalsLine t={it.t} settings={doc.settings} />
                 </div>
               );
             const e = it.entry;
@@ -443,7 +445,7 @@ function Grid({ items, cols, doc }: { items: Item[]; cols: ColMeta[]; doc: Track
               <div
                 key={vi.key}
                 className={'grid-row entry-row' + (e.status === 'cancelled' ? ' cancelled' : '')}
-                style={{ ...style, ['--tc' as string]: doc.settings.typeColors[e.type] }}
+                style={{ ...style, ['--tc' as string]: typeColor(doc.settings, e.type) }}
                 data-index={vi.index}
                 ref={virtualizer.measureElement}
                 role="row"
@@ -455,9 +457,10 @@ function Grid({ items, cols, doc }: { items: Item[]; cols: ColMeta[]; doc: Track
                         ↗
                       </button>
                     ) : c.id === 'money' ? (
-                      e.type === 'personal' ? null : (
+                      !typeHasMoney(doc.settings, e.type) ? null : (
                         <button type="button" className="cell-btn" onClick={() => ui.openMoney(e.id)}>
-                          <PayIcon entry={e} /> {moneySummary(e, doc.sources) || <span className="muted">—</span>}
+                          <PayIcon entry={e} settings={doc.settings} />{' '}
+                          {moneySummary(e, doc.sources, doc.settings) || <span className="muted">—</span>}
                         </button>
                       )
                     ) : editing && editing.id === e.id && editing.col === c.id ? (
@@ -471,9 +474,9 @@ function Grid({ items, cols, doc }: { items: Item[]; cols: ColMeta[]; doc: Track
                       <div
                         className="cell-view"
                         tabIndex={0}
-                        onClick={() => canEdit(e, c.id) && setEditing({ id: e.id, col: c.id })}
+                        onClick={() => canEdit(e, c.id, doc) && setEditing({ id: e.id, col: c.id })}
                         onKeyDown={(ev) => {
-                          if ((ev.key === 'Enter' || ev.key === 'F2') && canEdit(e, c.id)) {
+                          if ((ev.key === 'Enter' || ev.key === 'F2') && canEdit(e, c.id, doc)) {
                             ev.preventDefault();
                             setEditing({ id: e.id, col: c.id });
                           }
@@ -493,9 +496,9 @@ function Grid({ items, cols, doc }: { items: Item[]; cols: ColMeta[]; doc: Track
   );
 }
 
-function canEdit(e: Entry, col: ColId): boolean {
+function canEdit(e: Entry, col: ColId, doc: TrackerDoc): boolean {
   if (!COL_BY_ID[col].editable) return false;
-  if (e.type === 'personal' && (col === 'amount' || col === 'method' || col === 'invoiceNo')) return false;
+  if (!typeHasMoney(doc.settings, e.type) && (col === 'amount' || col === 'method' || col === 'invoiceNo')) return false;
   return true;
 }
 
@@ -508,8 +511,8 @@ function cellText(e: Entry, col: ColId, doc: TrackerDoc): React.ReactNode {
     case 'type':
       return (
         <span className="row gap-s">
-          <span className="type-dot" style={{ background: doc.settings.typeColors[e.type] }} />
-          {TYPE_LABELS[e.type].split(' ')[0]}
+          <span className="type-dot" style={{ background: typeColor(doc.settings, e.type) }} />
+          {typeName(doc.settings, e.type).split(' ')[0]}
         </span>
       );
     case 'date':
@@ -535,7 +538,7 @@ function cellText(e: Entry, col: ColId, doc: TrackerDoc): React.ReactNode {
     case 'media':
       return mediaText(e.media);
     case 'amount':
-      return e.type === 'personal' ? '' : formatEUR(e.amount);
+      return typeHasMoney(doc.settings, e.type) ? formatEUR(e.amount) : '';
     case 'method':
       return uniqueSorted(e.money.map((p) => methodLabel(p.method))).join(', ');
     case 'invoiceNo':
@@ -609,7 +612,7 @@ function patchFor(e: Entry, col: ColId, v: string): Partial<Entry> | undefined {
     case 'notes':
       return { notes: v || undefined };
     case 'type':
-      return { type: v as EntryType };
+      return { type: v };
     case 'status':
       return { status: v as EntryStatus };
     case 'source':
@@ -686,7 +689,7 @@ function CellEditor({
 
   switch (col) {
     case 'type':
-      return select(Object.entries(TYPE_LABELS));
+      return select(typeOptions(doc.settings, entry.type).map((t) => [t.id, t.name] as [string, string]));
     case 'status':
       return select(Object.entries(STATUS_LABELS));
     case 'source':
@@ -744,14 +747,20 @@ function CellEditor({
   }
 }
 
-export function TotalsLine({ t }: { t: MonthTotals }) {
+export function TotalsLine({ t, settings }: { t: MonthTotals; settings: Settings }) {
+  const parts = turnoverByType(settings, t.byType);
   return (
     <div className="totals">
       <span>
         Оборот <b>{formatEUR(t.turnover)}</b>
       </span>
-      <span className="muted">
-        осн. {formatEUR(t.main)} · совм. {formatEUR(t.joint)}
+      <span className="muted totals-types">
+        {parts.map((p, i) => (
+          <span key={p.id} className="totals-type">
+            {i > 0 && ' · '}
+            <span className="type-dot" style={{ background: p.color }} /> {p.name.toLowerCase()} {formatEUR(p.amount)}
+          </span>
+        ))}
       </span>
       <span>
         чистыми ≈ <b>{formatEUR(t.net)}</b>
@@ -795,7 +804,7 @@ function MobileList({ items, doc }: { items: Item[]; doc: TrackerDoc }) {
           if (it.k === 'total')
             return (
               <div key={vi.key} className="mlist-total" style={style} data-index={vi.index} ref={virtualizer.measureElement}>
-                <TotalsLine t={it.t} />
+                <TotalsLine t={it.t} settings={doc.settings} />
               </div>
             );
           const e = it.entry;
@@ -804,7 +813,7 @@ function MobileList({ items, doc }: { items: Item[]; doc: TrackerDoc }) {
               type="button"
               key={vi.key}
               className="mlist-row"
-              style={{ ...style, ['--tc' as string]: doc.settings.typeColors[e.type] }}
+              style={{ ...style, ['--tc' as string]: typeColor(doc.settings, e.type) }}
               data-index={vi.index}
               ref={virtualizer.measureElement}
               onClick={() => ui.openEntry(e.id)}
@@ -820,9 +829,9 @@ function MobileList({ items, doc }: { items: Item[]; doc: TrackerDoc }) {
                 </span>
               </span>
               <span className="mr-right">
-                {e.type !== 'personal' && e.amount !== undefined && <b>{formatEUR(e.amount)}</b>}
+                {typeHasMoney(doc.settings, e.type) && e.amount !== undefined && <b>{formatEUR(e.amount)}</b>}
                 <span className="row gap-s">
-                  <PayIcon entry={e} />
+                  <PayIcon entry={e} settings={doc.settings} />
                   <StatusBadge status={e.status} compact />
                 </span>
               </span>

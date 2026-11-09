@@ -1,5 +1,5 @@
 // Импорт трекера из .ods (SPEC §9): лист = месяц, строка = запись, итог SUM — для сверки.
-import type { Contact, Entry, EntryOrigin, EntryType, ISODate, Source, YearMonth } from '../model/types';
+import type { BuiltinType, Contact, Entry, EntryOrigin, EntryType, ISODate, Source, YearMonth } from '../model/types';
 import { newEntry, newId, nowIso } from '../model/entry';
 import { readOds } from './readOds';
 import type {
@@ -245,7 +245,7 @@ interface SheetCtx {
 interface ColorAcc {
   count: number;
   samples: string[];
-  votes: Record<EntryType, number>;
+  votes: Record<BuiltinType, number>;
 }
 
 interface RowOutput {
@@ -452,20 +452,23 @@ function parseRow(input: RowParseInput, ctx: SheetCtx): RowOutput | { skip: stri
   if (cls.guessed) issues.push('Тип угадан: нет суммы и явных признаков работы');
   const colorRole = rowColor ? ctx.opts.colorMap?.[rowColor] : undefined;
   const important = colorRole === 'important';
+  const noMoneyTypes = ctx.opts.noMoneyTypes ?? ['personal'];
+  const isNoMoney = (t: string) => noMoneyTypes.includes(t);
   if (colorRole && colorRole !== 'important') {
     type = colorRole;
     if (!afterTotal) {
-      if (type !== 'personal' && kind === 'event') kind = 'shoot';
-      if (type !== 'personal' && kind === 'note') kind = 'work';
-      if (type === 'personal' && kind === 'shoot' && amount === undefined) kind = 'event';
+      if (!isNoMoney(type) && kind === 'event') kind = 'shoot';
+      if (!isNoMoney(type) && kind === 'note') kind = 'work';
+      if (isNoMoney(type) && kind === 'shoot' && amount === undefined) kind = 'event';
     }
   }
-  if (type === 'personal' && amount !== undefined && amount !== 0) issues.push('Личное дело с суммой');
+  const noMoney = isNoMoney(type);
+  if (noMoney && amount !== undefined && amount !== 0) issues.push('Личное дело с суммой');
 
   // 8. Источник и деньги.
   let sourceId: string | undefined;
   let holderId: string | undefined;
-  if (sourceMatch && type !== 'personal') {
+  if (sourceMatch && !noMoney) {
     const s = sourceMatch.source ?? ctx.reg.source(sourceMatch.name);
     sourceId = s.id;
     if (sourceMatch.holder) holderId = s.id;
@@ -511,7 +514,7 @@ function parseRow(input: RowParseInput, ctx: SheetCtx): RowOutput | { skip: stri
 
   // 11. Прочие пометки.
   if (!dp.date && /^\s*\d{1,2}(?![\d.:])\s+\p{L}/u.test(titleText) && !afterTotal) issues.push('Дата не распознана');
-  if (kind === 'shoot' && amount === undefined && type !== 'personal') issues.push('Нет суммы');
+  if (kind === 'shoot' && amount === undefined && !noMoney) issues.push('Нет суммы');
   if (!dp.date && kind === 'work' && !/(ретуш|обработ|обр\b|слайдшоу|монтаж|правки)/i.test(allText) && !afterTotal) {
     issues.push('Без даты: засчитано как работа месяца');
   }
@@ -522,14 +525,14 @@ function parseRow(input: RowParseInput, ctx: SheetCtx): RowOutput | { skip: stri
   const tentative =
     dp.tentative || /(?<![\p{L}])(под\s+вопросом|уточнить)(?![\p{L}])/iu.test(allText) || /\?\s*$/.test(titleText);
   const category =
-    type === 'personal'
+    noMoney
       ? undefined
       : kind === 'work' && /(ретуш|обработ|слайдшоу|монтаж|(?<![\p{L}])обр(?![\p{L}]))/iu.test(titleText)
         ? 'ретушь'
         : findCategory(allText);
   const withEditing = findWithEditing(allText);
 
-  const contact = type === 'personal' && !phones.length ? undefined : ctx.reg.contact(contactName, phones, channels);
+  const contact = noMoney && !phones.length ? undefined : ctx.reg.contact(contactName, phones, channels);
 
   const partial: Partial<Entry> = {
     type,
@@ -580,7 +583,7 @@ function parseRow(input: RowParseInput, ctx: SheetCtx): RowOutput | { skip: stri
     }
     acc.count++;
     if (acc.samples.length < 5) acc.samples.push(input.raw);
-    acc.votes[heuristicType]++;
+    acc.votes[heuristicType as BuiltinType]++;
   }
 
   return {

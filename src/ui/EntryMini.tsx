@@ -1,6 +1,7 @@
 // Мини-карточка записи: полоса цвета типа слева, заголовок, дата/время, место, статус и оплата.
 import type { Entry, TrackerDoc } from '../model/types';
 import { formatEUR } from '../model/entry';
+import { typeColor, typeHasMoney } from '../model/taskTypes';
 import { PayIcon, StatusBadge, useUi } from './common';
 import { formatDateRange, formatTime, sourceName } from './util';
 
@@ -22,7 +23,7 @@ export function EntryMini({
   return (
     <div
       className={'mini' + (e.dateTentative ? ' tentative' : '')}
-      style={{ ['--tc' as string]: doc.settings.typeColors[e.type] }}
+      style={{ ['--tc' as string]: typeColor(doc.settings, e.type) }}
       draggable={draggable}
       onDragStart={(ev) => {
         ev.dataTransfer.setData('text/plain', e.id);
@@ -38,9 +39,11 @@ export function EntryMini({
         {note && <span className="mini-note">{note}</span>}
       </button>
       <div className="mini-side">
-        {e.type !== 'personal' && e.amount !== undefined && <span className="mini-amount">{formatEUR(e.amount)}</span>}
+        {typeHasMoney(doc.settings, e.type) && e.amount !== undefined && (
+          <span className="mini-amount">{formatEUR(e.amount)}</span>
+        )}
         <span className="row gap-s">
-          <PayIcon entry={e} />
+          <PayIcon entry={e} settings={doc.settings} />
           <StatusBadge status={e.status} compact />
         </span>
         {extra}

@@ -1,7 +1,8 @@
 import { strToU8, zipSync } from 'fflate';
-import type { Contact, Entry, EntryType, MoneyPart, Source, TrackerDoc, YearMonth } from '../model/types';
+import type { Contact, Entry, MoneyPart, Settings, Source, TrackerDoc, YearMonth } from '../model/types';
 import { STATUS_LABELS } from '../model/types';
-import { entryMonth, formatEUR, monthLabel, monthTotals, moneyTotal } from '../model/entry';
+import { entryMonth, formatEUR, monthLabel, monthTotals, moneyTotal, turnoverByType } from '../model/entry';
+import { typeColor, typeHasMoney, UNKNOWN_TYPE_COLOR } from '../model/taskTypes';
 import type { MonthTotals } from '../model/entry';
 
 export interface ExportOdsOptions {
@@ -32,20 +33,22 @@ export const MONTH_COLUMNS: { title: string; width: string }[] = [
 ];
 const SUM_COL = 'F';
 
-const SUMMARY_COLUMNS: { title: string; width: string }[] = [
+/** Колонки сводного листа; между «Оборот» и «Чистыми ≈» вставляется по колонке на каждый тип с деньгами. */
+const SUMMARY_HEAD: { title: string; width: string }[] = [
   { title: 'Месяц', width: '3.6cm' },
   { title: 'Оборот', width: '2.6cm' },
-  { title: 'Основная', width: '2.6cm' },
-  { title: 'Совместная', width: '2.6cm' },
+];
+const SUMMARY_TAIL: { title: string; width: string }[] = [
   { title: 'Чистыми ≈', width: '2.6cm' },
   { title: 'Получено', width: '2.6cm' },
   { title: 'У посредников', width: '2.8cm' },
   { title: 'У клиентов', width: '2.6cm' },
   { title: 'Съёмок', width: '2cm' },
 ];
+const TYPE_COL_WIDTH = '2.6cm';
+const SUMMARY_COLUMNS = [...SUMMARY_HEAD, ...SUMMARY_TAIL];
 
 const METHOD_LABELS: Record<string, string> = { cash: 'нал', revolut: 'револют', bank: 'счёт' };
-const TYPES: EntryType[] = ['main', 'joint', 'personal'];
 
 // ---------- XML-помощники ----------
 
@@ -146,8 +149,9 @@ function num(n: number): string {
 }
 
 /** Человекочитаемо: «получено», «у посредника: Петя 200», «у клиента», «получено 150; у клиента 150». */
-export function formatMoneyWhere(e: Entry, sources: Map<string, Source>): string {
-  if (e.type === 'personal' || !e.amount) return '';
+export function formatMoneyWhere(e: Entry, sources: Map<string, Source>, settings?: Settings): string {
+  const noMoney = settings ? !typeHasMoney(settings, e.type) : e.type === 'personal';
+  if (noMoney || !e.amount) return '';
   const owner = moneyTotal(e.money, 'owner');
   const byHolder = new Map<string, number>();
   for (const p of e.money) {
@@ -189,8 +193,8 @@ function formatNotes(e: Entry): string {
 }
 
 /** Сумма записи идёт в формулу итога, только если её считает monthTotals. */
-function amountCounted(e: Entry): boolean {
-  return e.amount !== undefined && e.status !== 'cancelled' && e.type !== 'personal';
+function amountCounted(e: Entry, settings: Settings): boolean {
+  return e.amount !== undefined && e.status !== 'cancelled' && typeHasMoney(settings, e.type);
 }
 
 // ---------- Отбор и группировка ----------
@@ -261,14 +265,19 @@ function normColor(c: string | undefined, fallback: string): string {
   return fallback;
 }
 
-/** Имя автостиля ячейки по типу записи. */
-export function typeCellStyle(type: EntryType, currency = false): string {
-  return `ce_${type}${currency ? '_cur' : ''}`;
+/** Цвет фона строки записи (#rrggbb) — цвет её типа. */
+function entryColor(e: Entry, settings: Settings): string {
+  return normColor(typeColor(settings, e.type), UNKNOWN_TYPE_COLOR);
 }
 
-function automaticStyles(doc: TrackerDoc): string {
-  const colors = doc.settings.typeColors;
-  const fallback: Record<EntryType, string> = { main: '#a5d6a7', joint: '#80deea', personal: '#fff59d' };
+/** Имя автостиля ячейки по цвету фона (один стиль на каждый используемый цвет). */
+export function colorCellStyle(color: string, currency = false): string {
+  return `ce_bg_${color.replace('#', '')}${currency ? '_cur' : ''}`;
+}
+
+function automaticStyles(doc: TrackerDoc, groups: SheetGroup[]): string {
+  const colors = new Set<string>();
+  for (const g of groups) for (const e of g.entries) colors.add(entryColor(e, doc.settings));
   const cols = [...MONTH_COLUMNS, ...SUMMARY_COLUMNS]
     .map((c) => c.width)
     .filter((w, i, a) => a.indexOf(w) === i);
@@ -295,10 +304,9 @@ function automaticStyles(doc: TrackerDoc): string {
   s += cell('ce_total_cur', undefined, true, true);
   s += cell('ce_plain', undefined, false, false);
   s += cell('ce_plain_cur', undefined, false, true);
-  for (const t of TYPES) {
-    const bg = normColor(colors?.[t], fallback[t]);
-    s += cell(typeCellStyle(t), bg, false, false);
-    s += cell(typeCellStyle(t, true), bg, false, true);
+  for (const bg of colors) {
+    s += cell(colorCellStyle(bg), bg, false, false);
+    s += cell(colorCellStyle(bg, true), bg, false, true);
   }
   s += '</office:automatic-styles>';
   return s;
@@ -319,13 +327,20 @@ function columns(defs: { width: string }[]): string {
 
 // ---------- Листы ----------
 
-function entryRow(e: Entry, ctx: { contacts: Map<string, Contact>; sources: Map<string, Source> }): string {
-  const st = typeCellStyle(e.type);
+interface SheetCtx {
+  contacts: Map<string, Contact>;
+  sources: Map<string, Source>;
+  settings: Settings;
+}
+
+function entryRow(e: Entry, ctx: SheetCtx): string {
+  const color = entryColor(e, ctx.settings);
+  const st = colorCellStyle(color);
   const amountCell =
     e.amount === undefined
       ? textCell('', st)
-      : amountCounted(e)
-        ? currencyCell(e.amount, typeCellStyle(e.type, true))
+      : amountCounted(e, ctx.settings)
+        ? currencyCell(e.amount, colorCellStyle(color, true))
         : textCell(formatEUR(e.amount) + (e.status === 'cancelled' ? ' (отменено)' : ''), st);
   const place = [e.location, e.mapUrl].filter(Boolean).join('\n');
   return row([
@@ -335,7 +350,7 @@ function entryRow(e: Entry, ctx: { contacts: Map<string, Contact>; sources: Map<
     textCell(place, st),
     textCell(e.category, st),
     amountCell,
-    textCell(formatMoneyWhere(e, ctx.sources), st),
+    textCell(formatMoneyWhere(e, ctx.sources, ctx.settings), st),
     textCell(formatMethods(e.money), st),
     textCell(e.invoiceNo, st),
     textCell(formatContact(e.contactId ? ctx.contacts.get(e.contactId) : undefined), st),
@@ -358,12 +373,12 @@ function headerRow(defs: { title: string }[]): string {
   return row(defs.map((c) => textCell(c.title, 'ce_head')));
 }
 
-function monthSheet(g: SheetGroup, doc: TrackerDoc, ctx: { contacts: Map<string, Contact>; sources: Map<string, Source> }): string {
+function monthSheet(g: SheetGroup, doc: TrackerDoc, ctx: SheetCtx): string {
   const rows: string[] = [headerRow(MONTH_COLUMNS)];
   for (const e of g.entries) rows.push(entryRow(e, ctx));
   const n = g.entries.length + 1; // последняя строка с записями
   const sumRow = n + 1;
-  const counted = g.entries.filter(amountCounted).reduce((s, e) => s + (e.amount ?? 0), 0);
+  const counted = g.entries.filter((e) => amountCounted(e, ctx.settings)).reduce((s, e) => s + (e.amount ?? 0), 0);
   const nf = doc.settings.netFactor;
   rows.push(labelledRow('Итого', currencyCell(counted, 'ce_total_cur', `of:=SUM([.${SUM_COL}2:.${SUM_COL}${n}])`)));
   rows.push(labelledRow('чистыми ≈', currencyCell(counted * nf, 'ce_total_cur', `of:=[.${SUM_COL}${sumRow}]*${nf}`)));
@@ -378,16 +393,27 @@ function monthSheet(g: SheetGroup, doc: TrackerDoc, ctx: { contacts: Map<string,
   );
 }
 
-function summarySheet(groups: SheetGroup[]): string {
-  const rows: string[] = [headerRow(SUMMARY_COLUMNS)];
+/** Буква колонки по индексу (0 → A, 26 → AA). */
+function colLetter(i: number): string {
+  let s = '';
+  for (let n = i + 1; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + ((n - 1) % 26)) + s;
+  return s;
+}
+
+function summarySheet(groups: SheetGroup[], doc: TrackerDoc): string {
+  // Колонка на каждый тип с деньгами (встроенные и свои) + неизвестные id, по которым есть суммы.
+  const all: Record<string, number> = {};
+  for (const g of groups) for (const [id, a] of Object.entries(g.totals.byType)) all[id] = (all[id] ?? 0) + a;
+  const types = turnoverByType(doc.settings, all, { allTypes: true });
+  const defs = [...SUMMARY_HEAD, ...types.map((t) => ({ title: t.name, width: TYPE_COL_WIDTH })), ...SUMMARY_TAIL];
+  const rows: string[] = [headerRow(defs)];
   for (const g of groups) {
     const t = g.totals;
     rows.push(
       row([
         textCell(g.name, 'ce_plain'),
         currencyCell(t.turnover, 'ce_plain_cur'),
-        currencyCell(t.main, 'ce_plain_cur'),
-        currencyCell(t.joint, 'ce_plain_cur'),
+        ...types.map((x) => currencyCell(t.byType[x.id] ?? 0, 'ce_plain_cur')),
         currencyCell(t.net, 'ce_plain_cur'),
         currencyCell(t.received, 'ce_plain_cur'),
         currencyCell(t.atIntermediary, 'ce_plain_cur'),
@@ -398,20 +424,28 @@ function summarySheet(groups: SheetGroup[]): string {
   }
   if (groups.length) {
     const last = groups.length + 1;
-    const sum = (k: keyof MonthTotals) => groups.reduce((s, g) => s + (g.totals[k] as number), 0);
-    const keys: (keyof MonthTotals)[] = ['turnover', 'main', 'joint', 'net', 'received', 'atIntermediary', 'atClient'];
-    const letters = 'BCDEFGH';
+    type NumKey = 'turnover' | 'net' | 'received' | 'atIntermediary' | 'atClient' | 'shoots';
+    const sum = (k: NumKey) => groups.reduce((s, g) => s + g.totals[k], 0);
+    const values = [
+      sum('turnover'),
+      ...types.map((x) => groups.reduce((s, g) => s + (g.totals.byType[x.id] ?? 0), 0)),
+      sum('net'),
+      sum('received'),
+      sum('atIntermediary'),
+      sum('atClient'),
+    ];
+    const formula = (i: number) => `of:=SUM([.${colLetter(i)}2:.${colLetter(i)}${last}])`;
     rows.push(
       row([
         textCell('Всего', 'ce_total'),
-        ...keys.map((k, i) => currencyCell(sum(k), 'ce_total_cur', `of:=SUM([.${letters[i]}2:.${letters[i]}${last}])`)),
-        floatCell(sum('shoots'), 'ce_total', `of:=SUM([.I2:.I${last}])`),
+        ...values.map((v, i) => currencyCell(v, 'ce_total_cur', formula(i + 1))),
+        floatCell(sum('shoots'), 'ce_total', formula(values.length + 1)),
       ]),
     );
   }
   return (
     `<table:table table:name="${SUMMARY_SHEET}" table:style-name="ta1">` +
-    columns(SUMMARY_COLUMNS) +
+    columns(defs) +
     rows.join('') +
     '</table:table>'
   );
@@ -433,16 +467,17 @@ const NS =
 const XML_HEAD = '<?xml version="1.0" encoding="UTF-8"?>\n';
 
 function contentXml(doc: TrackerDoc, groups: SheetGroup[]): string {
-  const ctx = {
+  const ctx: SheetCtx = {
     contacts: new Map(doc.contacts.filter((c) => !c.deleted).map((c) => [c.id, c])),
     sources: new Map(doc.sources.map((s) => [s.id, s])),
+    settings: doc.settings,
   };
   return (
     XML_HEAD +
     `<office:document-content ${NS} office:version="1.3">` +
-    automaticStyles(doc) +
+    automaticStyles(doc, groups) +
     '<office:body><office:spreadsheet>' +
-    summarySheet(groups) +
+    summarySheet(groups, doc) +
     groups.map((g) => monthSheet(g, doc, ctx)).join('') +
     '</office:spreadsheet></office:body></office:document-content>'
   );

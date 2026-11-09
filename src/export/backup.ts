@@ -1,5 +1,6 @@
 import type { TrackerDoc } from '../model/types';
 import { DEFAULT_SETTINGS } from '../model/types';
+import { normalizeTaskTypes } from '../model/taskTypes';
 
 export const BACKUP_APP = 'work-life-tracker';
 
@@ -70,7 +71,7 @@ export function parseBackup(text: string): TrackerDoc {
   const settings = {
     ...DEFAULT_SETTINGS,
     ...s,
-    typeColors: { ...DEFAULT_SETTINGS.typeColors, ...(isObject(s.typeColors) ? s.typeColors : {}) },
+    taskTypes: normalizeTaskTypes(s),
     calendar: { ...DEFAULT_SETTINGS.calendar, ...(isObject(s.calendar) ? s.calendar : {}) },
   };
   if (typeof settings.netFactor !== 'number' || !Number.isFinite(settings.netFactor)) {

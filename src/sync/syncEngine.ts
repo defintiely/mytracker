@@ -14,6 +14,7 @@ import { getConnection, onConnectionChange, scriptClient } from './scriptClient'
 import type { AfterSyncHook, Conflict, SyncState } from './types';
 import type { Settings, TrackerDoc } from '../model/types';
 import { DEFAULT_SETTINGS } from '../model/types';
+import { normalizeTaskTypes } from '../model/taskTypes';
 import { store as defaultStore, type TrackerStore } from '../store/store';
 
 /** Синхронизатор store ↔ tracker.json в Drive (через Apps Script). */
@@ -99,6 +100,8 @@ export function normalizeDoc(raw: unknown): TrackerDoc {
     settings: {
       ...structuredClone(DEFAULT_SETTINGS),
       ...s,
+      // Документ старой версии без taskTypes — дополняем из typeColors и названий по умолчанию.
+      taskTypes: normalizeTaskTypes(s),
       calendar: { ...DEFAULT_SETTINGS.calendar, ...(s.calendar ?? {}) },
     },
   };

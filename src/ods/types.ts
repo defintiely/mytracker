@@ -27,6 +27,7 @@ export interface OdsWorkbook {
   sheets: OdsSheet[];
 }
 
+/** Роль цвета: id любого типа задачи (встроенного или своего) или пометка 'important'. */
 export type ColorRole = EntryType | 'important';
 
 export interface ImportedRow {
@@ -74,6 +75,11 @@ export interface ImportOptions {
   /** Импортировать листы-заготовки будущих месяцев (по умолчанию нет). */
   includeTemplateSheets?: boolean;
   today?: ISODate;
+  /**
+   * id типов без денег (для сопоставления цвета со своим типом). По умолчанию — только 'personal'.
+   * У строк таких типов деньги не заводятся, как у личных дел.
+   */
+  noMoneyTypes?: string[];
 }
 
 export interface ImportResult {

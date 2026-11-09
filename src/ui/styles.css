@@ -1308,6 +1308,34 @@ th {
   align-items: center;
   gap: 8px;
 }
+.type-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.type-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 6px;
+  border-left: 6px solid var(--tc);
+  border-radius: 4px;
+}
+.type-row input[type='color'],
+.type-add input[type='color'] {
+  width: 36px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  background: none;
+}
+.type-money {
+  white-space: nowrap;
+}
+.totals-type {
+  white-space: nowrap;
+}
 .dict-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto;

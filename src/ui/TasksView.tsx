@@ -2,6 +2,7 @@
 import { useMemo, useState } from 'react';
 import type { Entry, EntryStatus, TrackerDoc } from '../model/types';
 import { STATUS_LABELS } from '../model/types';
+import { typeHasMoney } from '../model/taskTypes';
 import { store } from '../store/store';
 import { useTracker } from '../store/useTracker';
 import { useIsMobile } from './common';
@@ -113,7 +114,7 @@ function Board({ doc, showPersonal, mobile }: { doc: TrackerDoc; showPersonal: b
     const m = new Map<EntryStatus, Entry[]>(BOARD.map((s) => [s, []]));
     for (const e of doc.entries) {
       if (e.deleted || e.status === 'cancelled') continue;
-      if (!showPersonal && e.type === 'personal') continue;
+      if (!showPersonal && !typeHasMoney(doc.settings, e.type)) continue;
       if (e.kind === 'note') continue;
       m.get(e.status)?.push(e);
     }

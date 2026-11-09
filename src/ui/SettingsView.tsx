@@ -1,8 +1,8 @@
 // Экран «Настройки»: Google Drive (через Apps Script), календарь, общие параметры, цвета, категории, справочники, импорт и экспорт.
 import { useEffect, useState, type ReactNode } from 'react';
-import type { Contact, EntryType, Settings, Source } from '../model/types';
-import { TYPE_LABELS } from '../model/types';
-import { nowIso } from '../model/entry';
+import type { Contact, Entry, Settings, Source, TaskTypeDef } from '../model/types';
+import { newId, nowIso } from '../model/entry';
+import { normalizeTaskTypes, taskTypes } from '../model/taskTypes';
 import { store } from '../store/store';
 import { useTracker } from '../store/useTracker';
 import { OfflineError, ScriptCallError } from '../sync/errors';
@@ -22,7 +22,7 @@ import {
 import { buildScriptSource } from '../sync/scriptSource';
 import { syncEngine } from '../sync/syncEngine';
 import type { Conflict, SyncState } from '../sync/types';
-import { CommitInput, parseAmount } from './common';
+import { CommitInput, Modal, parseAmount } from './common';
 import { useSyncState } from './SyncIndicator';
 import { ImportWizard } from './ImportWizard';
 import { ExportPanel } from './ExportPanel';
@@ -76,22 +76,7 @@ export function SettingsView() {
           </div>
         </div>
       </section>
-      <section className="settings-block">
-        <h2>Цвета типов</h2>
-        <div className="hint">Цвет — главный признак записи: фон строки, полоса карточки, цвет в календаре.</div>
-        <div className="row gap wrap">
-          {(Object.keys(TYPE_LABELS) as EntryType[]).map((t) => (
-            <label key={t} className="color-pick">
-              <input
-                type="color"
-                value={s.typeColors[t]}
-                onChange={(e) => store.updateSettings({ typeColors: { ...s.typeColors, [t]: e.target.value } })}
-              />
-              {TYPE_LABELS[t]}
-            </label>
-          ))}
-        </div>
-      </section>
+      <TaskTypesSection s={s} entries={doc.entries} />
       <Categories s={s} />
       <SourcesSection sources={doc.sources} />
       <ContactsSection contacts={doc.contacts} />
@@ -486,7 +471,7 @@ function CalendarSection({ s }: { s: Settings }) {
       </div>
       <div className="grid2">
         <div className="field">
-          <label htmlFor="st-pm">Личные дела в календаре</label>
+          <label htmlFor="st-pm">Личные дела (типы без денег) в календаре</label>
           <select
             id="st-pm"
             value={cal.personalMode}
@@ -511,6 +496,158 @@ function CalendarSection({ s }: { s: Settings }) {
       </div>
     </section>
   );
+}
+
+/** Цвет для input type=color: только #rrggbb. */
+function colorInputValue(c: string): string {
+  if (/^#[0-9a-fA-F]{6}$/.test(c)) return c.toLowerCase();
+  if (/^#[0-9a-fA-F]{3}$/.test(c)) return ('#' + [...c.slice(1)].map((ch) => ch + ch).join('')).toLowerCase();
+  return '#cccccc';
+}
+
+const NEW_TYPE_COLORS = ['#ce93d8', '#ffab91', '#90caf9', '#bcaaa4', '#f48fb1', '#c5e1a5', '#b0bec5'];
+
+function TaskTypesSection({ s, entries }: { s: Settings; entries: Entry[] }) {
+  const active = taskTypes(s);
+  const [name, setName] = useState('');
+  const [color, setColor] = useState(() => NEW_TYPE_COLORS[0]);
+  const [money, setMoney] = useState(true);
+  const [removing, setRemoving] = useState<TaskTypeDef>();
+  const [target, setTarget] = useState('main');
+
+  /** Записать список целиком: все типы, включая tombstone-ы удалённых. */
+  const save = (fn: (list: TaskTypeDef[]) => TaskTypeDef[]) =>
+    store.updateSettings({ taskTypes: fn(normalizeTaskTypes(s)) });
+  const patch = (id: string, p: Partial<TaskTypeDef>) => save((list) => list.map((t) => (t.id === id ? { ...t, ...p } : t)));
+
+  const add = () => {
+    const n = name.trim();
+    if (!n) return;
+    save((list) => [...list, { id: newId(), name: n, color, money }]);
+    setName('');
+    setMoney(true);
+    setColor(NEW_TYPE_COLORS[Math.max(0, active.length - 2) % NEW_TYPE_COLORS.length]);
+  };
+
+  const live = (id: string) => entries.filter((e) => !e.deleted && e.type === id);
+  const tombstone = (id: string) => patch(id, { deleted: true });
+
+  const askRemove = (t: TaskTypeDef) => {
+    if (!live(t.id).length) {
+      if (window.confirm(`Удалить тип «${t.name}»?`)) tombstone(t.id);
+      return;
+    }
+    setTarget(active.find((x) => x.id !== t.id)?.id ?? 'main');
+    setRemoving(t);
+  };
+
+  const confirmRemove = () => {
+    if (!removing) return;
+    for (const e of live(removing.id)) store.updateEntry(e.id, { type: target });
+    tombstone(removing.id);
+    setRemoving(undefined);
+  };
+
+  return (
+    <section className="settings-block">
+      <h2>Типы задач</h2>
+      <div className="hint">
+        Цвет — главный признак записи: фон строки, полоса карточки, цвет в календаре. У типов «без денег» поля денег
+        скрыты, и они не входят в оборот.
+      </div>
+      <div className="type-list">
+        {active.map((t) => (
+          <div className="type-row" key={t.id} style={{ ['--tc' as string]: t.color }}>
+            <input
+              type="color"
+              aria-label={'Цвет типа ' + t.name}
+              value={colorInputValue(t.color)}
+              onChange={(e) => patch(t.id, { color: e.target.value })}
+            />
+            <CommitInput
+              aria-label="Название типа"
+              value={t.name}
+              onCommit={(v) => v.trim() && v.trim() !== t.name && patch(t.id, { name: v.trim() })}
+            />
+            {t.builtin ? (
+              <span className="muted small type-money">{t.money ? 'с деньгами' : 'без денег'} · встроенный</span>
+            ) : (
+              <>
+                <label className="check type-money">
+                  <input
+                    type="checkbox"
+                    aria-label={'С деньгами: ' + t.name}
+                    checked={t.money}
+                    onChange={(e) => patch(t.id, { money: e.target.checked })}
+                  />{' '}
+                  с деньгами
+                </label>
+                <button type="button" className="small danger" aria-label={'Удалить тип ' + t.name} onClick={() => askRemove(t)}>
+                  Удалить
+                </button>
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="row gap wrap type-add">
+        <input type="color" aria-label="Цвет нового типа" value={color} onChange={(e) => setColor(e.target.value)} />
+        <input
+          aria-label="Название нового типа"
+          value={name}
+          placeholder="Новый тип, например «Обучение»"
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && add()}
+        />
+        <label className="check">
+          <input type="checkbox" checked={money} onChange={(e) => setMoney(e.target.checked)} /> с деньгами
+        </label>
+        <button type="button" onClick={add} disabled={!name.trim()}>
+          + Добавить тип
+        </button>
+      </div>
+      {removing && (
+        <Modal
+          title={`Удалить тип «${removing.name}»`}
+          onClose={() => setRemoving(undefined)}
+          footer={
+            <>
+              <button type="button" onClick={() => setRemoving(undefined)}>
+                Отмена
+              </button>
+              <button type="button" className="danger" onClick={confirmRemove}>
+                Перевести и удалить
+              </button>
+            </>
+          }
+        >
+          <div className="field">
+            <label htmlFor="tt-move">
+              {live(removing.id).length} {plural(live(removing.id).length, 'запись', 'записи', 'записей')} этого типа →
+              перевести в:
+            </label>
+            <select id="tt-move" value={target} onChange={(e) => setTarget(e.target.value)}>
+              {active
+                .filter((t) => t.id !== removing.id)
+                .map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+            </select>
+          </div>
+        </Modal>
+      )}
+    </section>
+  );
+}
+
+function plural(n: number, one: string, few: string, many: string): string {
+  const m10 = n % 10;
+  const m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+  return many;
 }
 
 function Categories({ s }: { s: Settings }) {

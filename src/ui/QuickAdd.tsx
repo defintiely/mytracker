@@ -1,8 +1,9 @@
 // Строка быстрого ввода: «12.12 спектакль 11-12 200 от Пети» → предпросмотр → Enter создаёт запись.
 import { useMemo, useState } from 'react';
 import type { Entry, TrackerDoc } from '../model/types';
-import { KIND_LABELS, TYPE_LABELS } from '../model/types';
+import { KIND_LABELS } from '../model/types';
 import { formatEUR, newEntry } from '../model/entry';
+import { typeName } from '../model/taskTypes';
 import type { ParsedLine } from '../ods/types';
 import { parseQuickLine } from '../ods/parseLine';
 import { store } from '../store/store';
@@ -146,7 +147,7 @@ function PreviewLine({ p, doc }: { p: Preview; doc: TrackerDoc }) {
   }
   const e = p.parsed.entry;
   const chips: string[] = [];
-  if (e.type) chips.push(TYPE_LABELS[e.type]);
+  if (e.type) chips.push(typeName(doc.settings, e.type));
   if (e.kind) chips.push(KIND_LABELS[e.kind]);
   if (e.date) chips.push('📅 ' + formatDateRange({ date: e.date, dateEnd: e.dateEnd, dateTentative: !!e.dateTentative }));
   const time = formatTime({ timeStart: e.timeStart, timeEnd: e.timeEnd, timeNote: e.timeNote, allDay: !!e.allDay });

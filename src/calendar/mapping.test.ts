@@ -122,8 +122,37 @@ describe('entryToEvent', () => {
     expect(nearestColorId('#50b84a')).toBe('10');
     expect(nearestColorId('не цвет')).toBeUndefined();
     const d = docWith();
-    d.settings.typeColors.main = '#5484ed';
+    d.settings.taskTypes = d.settings.taskTypes.map((t) => (t.id === 'main' ? { ...t, color: '#5484ed' } : t));
     expect(entryToEvent(shoot(), d)!.colorId).toBe('9');
+  });
+
+  it('свой тип: цвет события — цвет типа; неизвестный id не роняет выгрузку', () => {
+    const d = docWith();
+    d.settings.taskTypes = [...d.settings.taskTypes, { id: 'edu', name: 'Обучение', color: '#dc2127', money: true }];
+    const ev = entryToEvent(shoot({ type: 'edu' }), d)!;
+    expect(ev.colorId).toBe('11');
+    expect(ev.summary).toBe('📷 Альфа праздник осени');
+    const unknown = entryToEvent(shoot({ type: 'нет-такого' }), d)!;
+    expect(unknown).not.toBeNull();
+    expect(unknown.summary).toBe('📷 Альфа праздник осени');
+  });
+
+  it('свой тип без денег: режим «личного» (busy/skip), без значков и без денег в описании', () => {
+    const withType = (cal: Partial<TrackerDoc['settings']['calendar']>) => {
+      const d = docWith(cal);
+      d.settings.taskTypes = [...d.settings.taskTypes, { id: 'fam', name: 'Семья', color: '#fbd75b', money: false }];
+      return d;
+    };
+    const e = shoot({ type: 'fam', kind: 'event', title: 'Школа', amount: 50, location: 'Школа №1' });
+    const full = entryToEvent(e, withType({ personalMode: 'full', includeMoney: true }))!;
+    expect(full.summary).toBe('Школа');
+    expect(full.description ?? '').not.toContain('Сумма');
+    const busy = entryToEvent(e, withType({ personalMode: 'busy' }))!;
+    expect(busy.summary).toBe('Занято');
+    expect(busy.location).toBeUndefined();
+    expect(entryToEvent(e, withType({ personalMode: 'skip' }))).toBeNull();
+    // Тип с деньгами при skip выгружается.
+    expect(entryToEvent(shoot(), withType({ personalMode: 'skip' }))).not.toBeNull();
   });
 
   it('напоминания из настроек, popup, без useDefault', () => {

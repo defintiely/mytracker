@@ -68,6 +68,7 @@ describe('итоги месяца и статус оплаты', () => {
     expect(t.net).toBe(1072);
     expect(t.main).toBe(900);
     expect(t.joint).toBe(700);
+    expect(t.byType).toEqual({ main: 900, joint: 700 });
     expect(t.received).toBe(350);
     expect(t.atIntermediary).toBe(700);
     expect(t.atClient).toBe(550);

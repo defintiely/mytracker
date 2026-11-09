@@ -90,6 +90,93 @@ describe('App', () => {
     expect(store.getDoc().entries[0].money).toEqual([expect.objectContaining({ amount: 500, where: 'owner' })]);
   });
 
+  it('свой тип: добавить в настройках → есть в выборе типа карточки → запись окрашена его цветом', () => {
+    const e = newEntry({ title: 'Курс ретуши', date: '2030-05-01', status: 'booked', amount: 300 });
+    act(() => store.upsertEntry(e));
+    render(<App />);
+    const nav = screen.getByRole('navigation', { name: 'Разделы' });
+    fireEvent.click(within(nav).getByRole('button', { name: /Настройки/ }));
+    expect(screen.getByText('Типы задач')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Название нового типа'), { target: { value: 'Обучение' } });
+    fireEvent.change(screen.getByLabelText('Цвет нового типа'), { target: { value: '#ab47bc' } });
+    fireEvent.click(screen.getByRole('button', { name: '+ Добавить тип' }));
+    const added = store.getDoc().settings.taskTypes.find((t) => t.name === 'Обучение')!;
+    expect(added).toMatchObject({ color: '#ab47bc', money: true });
+    expect(added.builtin).toBeUndefined();
+    expect(screen.getByLabelText('Цвет типа Обучение')).toBeTruthy();
+
+    fireEvent.click(within(nav).getByRole('button', { name: /Задачи/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Канбан' }));
+    fireEvent.click(screen.getByText('Курс ретуши'));
+    const dialog = screen.getByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Обучение' }));
+    expect(store.getDoc().entries[0].type).toBe(added.id);
+    const card = dialog.querySelector('.entry-card') as HTMLElement;
+    expect(card.style.getPropertyValue('--tc')).toBe('#ab47bc');
+    // Тип с деньгами — поле суммы на месте.
+    expect(within(dialog).queryByLabelText('Сумма, €')).toBeTruthy();
+    // Встроенный тип без денег — поле суммы скрыто.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Личное' }));
+    expect(within(dialog).queryByLabelText('Сумма, €')).toBeNull();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Обучение' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Готово' }));
+    const mini = screen.getByText('Курс ретуши').closest('.mini') as HTMLElement;
+    expect(mini.style.getPropertyValue('--tc')).toBe('#ab47bc');
+  });
+
+  it('удаление своего типа: записи переводятся в выбранный тип, тип становится tombstone', () => {
+    const doc = emptyDoc();
+    doc.settings.taskTypes = [
+      ...doc.settings.taskTypes,
+      { id: 'edu', name: 'Обучение', color: '#ab47bc', money: true },
+      { id: 'fam', name: 'Семья', color: '#123456', money: false },
+    ];
+    doc.entries = [
+      newEntry({ type: 'edu', title: 'Курс 1' }),
+      newEntry({ type: 'edu', title: 'Курс 2' }),
+      newEntry({ type: 'edu', title: 'удалённая', deleted: true }),
+    ];
+    act(() => store.replaceDoc(doc));
+    render(<App />);
+    const nav = screen.getByRole('navigation', { name: 'Разделы' });
+    fireEvent.click(within(nav).getByRole('button', { name: /Настройки/ }));
+
+    // Встроенные удалить нельзя.
+    expect(screen.queryByRole('button', { name: 'Удалить тип Личное' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Удалить тип Обучение' }));
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText(/2 записи этого типа/)).toBeTruthy();
+    fireEvent.change(within(dialog).getByRole('combobox'), { target: { value: 'joint' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Перевести и удалить' }));
+    const after = store.getDoc();
+    expect(after.entries.filter((x) => !x.deleted).map((x) => x.type)).toEqual(['joint', 'joint']);
+    expect(after.settings.taskTypes.find((t) => t.id === 'edu')).toMatchObject({ deleted: true });
+    expect(screen.queryByLabelText('Цвет типа Обучение')).toBeNull();
+
+    // Без записей — подтверждение и сразу tombstone.
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Удалить тип Семья' }));
+    expect(confirm).toHaveBeenCalled();
+    expect(store.getDoc().settings.taskTypes.find((t) => t.id === 'fam')).toMatchObject({ deleted: true });
+    confirm.mockRestore();
+  });
+
+  it('запись неизвестного типа не роняет интерфейс', () => {
+    act(() => store.upsertEntry(newEntry({ type: 'нет-такого', title: 'Странная', date: '2030-05-01', amount: 10 })));
+    render(<App />);
+    const nav = screen.getByRole('navigation', { name: 'Разделы' });
+    for (const tab of [/Задачи/, /Итоги/, /Календарь/, /Деньги/, /Таблица/]) {
+      fireEvent.click(within(nav).getByRole('button', { name: tab }));
+    }
+    fireEvent.click(within(nav).getByRole('button', { name: /Задачи/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Канбан' }));
+    fireEvent.click(screen.getByText('Странная'));
+    const dialog = screen.getByRole('dialog');
+    // Текущий (неизвестный) тип остаётся в выборе.
+    expect(within(dialog).getByRole('button', { name: 'нет-такого' }).getAttribute('aria-pressed')).toBe('true');
+  });
+
   it('новая запись из карточки попадает в store только после «Создать»', () => {
     render(<App />);
     fireEvent.click(screen.getByRole('button', { name: 'Новая запись' }));

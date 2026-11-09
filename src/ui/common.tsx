@@ -9,8 +9,9 @@ import {
   type ReactNode,
 } from 'react';
 import type { Entry, EntryType, Settings } from '../model/types';
-import { STATUS_LABELS, TYPE_LABELS } from '../model/types';
+import { STATUS_LABELS } from '../model/types';
 import { payState } from '../model/entry';
+import { typeDef } from '../model/taskTypes';
 import { PAY_ICONS, STATUS_ICONS } from './util';
 
 // ---------- контекст: открыть карточку / создать запись ----------
@@ -53,19 +54,11 @@ export function useIsMobile(): boolean {
 
 // ---------- значки ----------
 
-export function typeColor(settings: Settings, t: EntryType): string {
-  return settings.typeColors[t];
-}
+export { typeColor } from '../model/taskTypes';
 
 export function TypeDot({ type, settings }: { type: EntryType; settings: Settings }) {
-  return (
-    <span
-      className="type-dot"
-      style={{ background: settings.typeColors[type] }}
-      title={TYPE_LABELS[type]}
-      aria-label={TYPE_LABELS[type]}
-    />
-  );
+  const d = typeDef(settings, type);
+  return <span className="type-dot" style={{ background: d.color }} title={d.name} aria-label={d.name} />;
 }
 
 export function StatusBadge({ status, compact }: { status: Entry['status']; compact?: boolean }) {
@@ -77,8 +70,8 @@ export function StatusBadge({ status, compact }: { status: Entry['status']; comp
   );
 }
 
-export function PayIcon({ entry }: { entry: Pick<Entry, 'amount' | 'money' | 'type'> }) {
-  const ps = payState(entry);
+export function PayIcon({ entry, settings }: { entry: Pick<Entry, 'amount' | 'money' | 'type'>; settings?: Settings }) {
+  const ps = payState(entry, settings);
   if (ps === 'none') return null;
   const p = PAY_ICONS[ps];
   return (

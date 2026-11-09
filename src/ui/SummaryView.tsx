@@ -2,13 +2,14 @@
 // разбивка по категориям и источникам, деньги у клиентов/посредников, сравнение с прошлым годом.
 import { useMemo, useState } from 'react';
 import type { Entry, TrackerDoc, YearMonth } from '../model/types';
-import { entryMonth, formatEUR, monthLabel, monthTotals, type MonthTotals } from '../model/entry';
+import { entryMonth, formatEUR, monthLabel, monthTotals, turnoverByType, type MonthTotals } from '../model/entry';
+import { typeHasMoney } from '../model/taskTypes';
 import { useTracker } from '../store/useTracker';
 import { MONTH_NAMES_RU } from '../model/entry';
 import { sourceName } from './util';
 
 function countable(doc: TrackerDoc): Entry[] {
-  return doc.entries.filter((e) => !e.deleted && e.status !== 'cancelled' && e.type !== 'personal');
+  return doc.entries.filter((e) => !e.deleted && e.status !== 'cancelled' && typeHasMoney(doc.settings, e.type));
 }
 
 /** Средний чек: оборот / число записей с положительной суммой (съёмки и обработка). */
@@ -19,10 +20,22 @@ function avgCheck(list: Entry[]): number {
 }
 
 function sumTotals(list: MonthTotals[], month: string): MonthTotals {
-  const t: MonthTotals = { month, turnover: 0, net: 0, main: 0, joint: 0, received: 0, atIntermediary: 0, atClient: 0, shoots: 0 };
+  const t: MonthTotals = {
+    month,
+    turnover: 0,
+    net: 0,
+    byType: {},
+    main: 0,
+    joint: 0,
+    received: 0,
+    atIntermediary: 0,
+    atClient: 0,
+    shoots: 0,
+  };
   for (const x of list) {
     t.turnover += x.turnover;
     t.net += x.net;
+    for (const [id, a] of Object.entries(x.byType)) t.byType[id] = (t.byType[id] ?? 0) + a;
     t.main += x.main;
     t.joint += x.joint;
     t.received += x.received;
@@ -100,6 +113,11 @@ export function SummaryView() {
     })
     .filter((x) => x.t.turnover !== 0 || x.y === new Date().getFullYear());
   const maxYear = Math.max(1, ...allYears.map((x) => x.t.turnover));
+  // Колонки оборота по типам с деньгами (все активные + неизвестные id с суммами за год).
+  const typeCols = turnoverByType(doc.settings, yearT.byType, { allTypes: true });
+  const byType: [string, number][] = turnoverByType(doc.settings, scopeT.byType)
+    .filter((x) => x.amount !== 0)
+    .map((x) => [x.name, x.amount]);
 
   const delta = (cur: number, prev: number) => {
     if (!prev) return null;
@@ -188,8 +206,11 @@ export function SummaryView() {
             <tr>
               <th>Месяц</th>
               <th>Оборот</th>
-              <th>осн.</th>
-              <th>совм.</th>
+              {typeCols.map((c) => (
+                <th key={c.id}>
+                  <span className="type-dot" style={{ background: c.color }} /> {c.name}
+                </th>
+              ))}
               <th>Чистыми ≈</th>
               <th>Съёмок</th>
               <th>Год назад</th>
@@ -202,8 +223,9 @@ export function SummaryView() {
               <tr key={t.month} className={month === t.month ? 'on' : ''}>
                 <td>{monthLabel(t.month)}</td>
                 <td>{formatEUR(t.turnover)}</td>
-                <td>{formatEUR(t.main)}</td>
-                <td>{formatEUR(t.joint)}</td>
+                {typeCols.map((c) => (
+                  <td key={c.id}>{formatEUR(t.byType[c.id] ?? 0)}</td>
+                ))}
                 <td>{formatEUR(t.net)}</td>
                 <td>{t.shoots}</td>
                 <td>
@@ -216,8 +238,9 @@ export function SummaryView() {
             <tr className="total">
               <td>Итого {year}</td>
               <td>{formatEUR(yearT.turnover)}</td>
-              <td>{formatEUR(yearT.main)}</td>
-              <td>{formatEUR(yearT.joint)}</td>
+              {typeCols.map((c) => (
+                <td key={c.id}>{formatEUR(yearT.byType[c.id] ?? 0)}</td>
+              ))}
               <td>{formatEUR(yearT.net)}</td>
               <td>{yearT.shoots}</td>
               <td>
@@ -231,6 +254,7 @@ export function SummaryView() {
       </div>
 
       <div className="grid2 breakdowns">
+        <Breakdown title={`По типам задач · ${month ? monthLabel(month) : year}`} rows={byType} />
         <Breakdown title={`По категориям · ${month ? monthLabel(month) : year}`} rows={byCat} />
         <Breakdown title={`По источникам · ${month ? monthLabel(month) : year}`} rows={bySrc} />
       </div>

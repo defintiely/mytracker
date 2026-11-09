@@ -14,7 +14,8 @@ const NS_FO = 'urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0';
 
 export function sampleDoc(): TrackerDoc {
   const doc = emptyDoc();
-  doc.settings.typeColors = { main: '#00ff00', joint: '#0000ff', personal: '#ffff00' };
+  const colors: Record<string, string> = { main: '#00ff00', joint: '#0000ff', personal: '#ffff00' };
+  doc.settings.taskTypes = doc.settings.taskTypes.map((t) => ({ ...t, color: colors[t.id] }));
   doc.sources = [
     { id: 's1', name: 'Петя', aliases: ['петя'], createdAt: '', updatedAt: '' },
   ];
@@ -250,6 +251,55 @@ describe('exportOds', () => {
     const names = tables(c2).map((t) => t.getAttributeNS(NS_TABLE, 'name'));
     expect(names).toEqual(['Итоги', 'Июнь 2026']);
     expect(rowsOf(tables(c2)[1])).toHaveLength(1 + 1 + 5);
+  });
+
+  it('свой тип: фон строки — его цвет, колонка в «Итогах»; без денег — не в обороте; неизвестный id — серый', () => {
+    const d = sampleDoc();
+    d.settings.taskTypes = [
+      ...d.settings.taskTypes,
+      { id: 'edu', name: 'Обучение', color: '#AB47BC', money: true },
+      { id: 'fam', name: 'Семья', color: '#123456', money: false },
+    ];
+    d.entries = [
+      newEntry({ type: 'edu', title: 'Курс', date: '2026-08-02', amount: 150, money: [] }),
+      newEntry({ type: 'fam', title: 'Школа', date: '2026-08-03', amount: 40, money: [] }),
+      newEntry({ type: 'нет-такого', title: 'Странная', date: '2026-08-04', amount: 10, money: [] }),
+    ];
+    const { content: c } = unpack(exportOds(d));
+    const styles = new Map<string, string>();
+    for (const s of Array.from(c.getElementsByTagNameNS(NS_STYLE, 'style'))) {
+      const bg = s.getElementsByTagNameNS(NS_STYLE, 'table-cell-properties')[0]?.getAttributeNS(NS_FO, 'background-color');
+      if (bg) styles.set(s.getAttributeNS(NS_STYLE, 'name')!, bg);
+    }
+    const [summary, aug] = tables(c);
+    const rows = rowsOf(aug);
+    const bgOf = (r: Element) => styles.get(cellAt(r, 0)!.getAttributeNS(NS_TABLE, 'style-name')!);
+    expect(bgOf(rows[1])).toBe('#ab47bc');
+    expect(bgOf(rows[2])).toBe('#123456');
+    expect(bgOf(rows[3])).toBe('#cfd8dc');
+    // Сумма типа без денег не идёт в формулу итога: Итого = 150 + 10.
+    expect(cellAt(rows[4], 5)!.getAttributeNS(NS_OFFICE, 'value')).toBe('160');
+    expect(cellAt(rows[2], 5)!.getAttributeNS(NS_OFFICE, 'value-type')).not.toBe('currency');
+
+    const srows = rowsOf(summary);
+    const head = Array.from({ length: 10 }, (_, i) => cellText(cellAt(srows[0], i)!));
+    expect(head).toEqual([
+      'Месяц',
+      'Оборот',
+      'Основная работа',
+      'Совместная работа',
+      'Обучение',
+      'нет-такого',
+      'Чистыми ≈',
+      'Получено',
+      'У посредников',
+      'У клиентов',
+    ]);
+    const val = (i: number) => Number(cellAt(srows[1], i)!.getAttributeNS(NS_OFFICE, 'value'));
+    expect([1, 2, 3, 4, 5].map(val)).toEqual([160, 0, 0, 150, 10]);
+    // Итоговая строка: формула по колонке своего типа и по «Съёмкам» (K).
+    expect(cellAt(srows[2], 4)!.getAttributeNS(NS_TABLE, 'formula')).toBe('of:=SUM([.E2:.E2])');
+    expect(cellAt(srows[2], 10)!.getAttributeNS(NS_TABLE, 'formula')).toBe('of:=SUM([.K2:.K2])');
   });
 
   it('пустой документ — только «Итоги»', () => {
