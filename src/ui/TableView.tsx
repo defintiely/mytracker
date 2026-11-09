@@ -37,7 +37,9 @@ import {
   formatDate,
   formatDateRange,
   formatTime,
+  isWeekend,
   lsGet,
+  WEEKEND_CLASS,
   lsSet,
   methodLabel,
   moneySummary,
@@ -49,7 +51,8 @@ import {
   uniqueSorted,
   withHistory,
 } from './util';
-import { useShowEmptyDays } from './tablePrefs';
+import { useShowEmptyDays, useTableMode, useTableSort, type SortDir, type TableMode } from './tablePrefs';
+import { YearView } from './YearView';
 
 // ---------- колонки ----------
 
@@ -230,11 +233,16 @@ export function applyFilters(doc: TrackerDoc, f: Filters): Entry[] {
   });
 }
 
-function sortInMonth(a: Entry, b: Entry): number {
-  if (a.date && b.date) return a.date.localeCompare(b.date) || (a.timeStart ?? '').localeCompare(b.timeStart ?? '');
-  if (a.date) return -1;
-  if (b.date) return 1;
-  return a.createdAt.localeCompare(b.createdAt);
+/** Порядок записей в месяце: по дате и времени в выбранную сторону; записи без даты — всегда в конце. */
+function sortInMonth(dir: SortDir) {
+  const sign = dir === 'asc' ? 1 : -1;
+  return (a: Entry, b: Entry): number => {
+    if (a.date && b.date)
+      return sign * (a.date.localeCompare(b.date) || (a.timeStart ?? '').localeCompare(b.timeStart ?? ''));
+    if (a.date) return -1;
+    if (b.date) return 1;
+    return a.createdAt.localeCompare(b.createdAt);
+  };
 }
 
 /** Фильтры, при которых день «пуст» лишь потому, что его записи отфильтрованы: пустые дни тогда не показываем. */
@@ -287,10 +295,12 @@ function coveredDays(entries: Entry[]): Set<ISODate> {
 
 /**
  * Строки таблицы: месяц → записи → итоги. С emptyDays внутри каждого месяца (кроме «Без даты») ещё и
- * строки дней без записей — по возрастанию даты, как и записи месяца. Месяцы тогда: те, где есть записи,
- * плюс текущий, плюс все между самым ранним и самым поздним (без «дыр»), в пределах периода фильтра.
+ * строки дней без записей — вперемешку с записями, в том же порядке по дате. Месяцы тогда: те, где есть
+ * записи, плюс текущий (в пределах периода фильтра).
+ * dir — порядок по дате и для месяцев, и для дней внутри месяца: 'desc' — сначала новые, 'asc' — сначала
+ * старые. «Без даты» — всегда последняя группа, итоги — всегда последняя строка своего месяца.
  */
-export function buildItems(entries: Entry[], doc: TrackerDoc, emptyDays?: EmptyDaysOpts): Item[] {
+export function buildItems(entries: Entry[], doc: TrackerDoc, emptyDays?: EmptyDaysOpts, dir: SortDir = 'desc'): Item[] {
   const groups = new Map<string, Entry[]>();
   for (const e of entries) {
     const m = entryMonth(e) ?? NO_MONTH;
@@ -304,19 +314,21 @@ export function buildItems(entries: Entry[], doc: TrackerDoc, emptyDays?: EmptyD
     // Месяцы без единой записи не показываем; исключение — текущий месяц (к нему перематывается таблица).
     if ((!from || currentMonth >= from) && (!to || currentMonth <= to)) monthSet.add(currentMonth);
   }
-  const keys = [...monthSet].sort((a, b) => b.localeCompare(a));
+  const keys = [...monthSet].sort((a, b) => (dir === 'asc' ? a.localeCompare(b) : b.localeCompare(a)));
   if (groups.has(NO_MONTH)) keys.push(NO_MONTH);
   const covered = emptyDays ? coveredDays(entries) : undefined;
   const items: Item[] = [];
   for (const k of keys) {
-    const list = (groups.get(k) ?? []).sort(sortInMonth);
+    const list = (groups.get(k) ?? []).sort(sortInMonth(dir));
     items.push({ k: 'month', key: k, label: k === NO_MONTH ? 'Без даты' : monthLabel(k), count: list.length });
     if (covered && k !== NO_MONTH) {
       const days = monthDays(k).filter((d) => !covered.has(d));
+      if (dir === 'desc') days.reverse();
+      const before = (d: ISODate, until: ISODate) => (dir === 'asc' ? d < until : d > until);
       let di = 0;
-      /** Выложить пустые дни раньше until (без until — все оставшиеся). */
+      /** Выложить пустые дни, которые по порядку идут раньше until (без until — все оставшиеся). */
       const flush = (until?: ISODate) => {
-        for (; di < days.length && (until === undefined || days[di] < until); di++) {
+        for (; di < days.length && (until === undefined || before(days[di], until)); di++) {
           const wd = parseISODate(days[di]).getDay();
           items.push({ k: 'empty', key: days[di], weekend: wd === 0 || wd === 6 });
         }
@@ -334,36 +346,48 @@ export function buildItems(entries: Entry[], doc: TrackerDoc, emptyDays?: EmptyD
   return items;
 }
 
-/** Строка «сегодня» для перемотки: запись или пустой день на сегодня, иначе ближайшая дальше в этом месяце,
- * иначе заголовок текущего месяца, иначе ближайший прошедший месяц. -1 — ничего подходящего. */
-export function todayIndex(items: Item[], today: ISODate): number {
+/**
+ * Строка дня для перемотки (обычно «сегодня»): запись или пустой день на эту дату, иначе ближайшая строка этого
+ * месяца дальше по направлению чтения (при «сначала новые» — более ранняя дата, при «сначала старые» — более
+ * поздняя), иначе заголовок месяца дня, иначе ближайший месяц дальше по направлению чтения, иначе ближайший
+ * с другой стороны. «Без даты» не выбирается. -1 — ничего подходящего.
+ */
+export function todayIndex(items: Item[], today: ISODate, dir: SortDir = 'desc'): number {
   const month = today.slice(0, 7);
   const dateOf = (it: Item): ISODate | undefined => (it.k === 'row' ? it.entry.date : it.k === 'empty' ? it.key : undefined);
   const exact = items.findIndex((it) => dateOf(it) === today);
   if (exact >= 0) return exact;
-  const later = items.findIndex((it) => {
+  const ahead = (a: string, b: string) => (dir === 'asc' ? a > b : a < b);
+  const next = items.findIndex((it) => {
     const d = dateOf(it);
-    return !!d && d.slice(0, 7) === month && d > today;
+    return !!d && d.slice(0, 7) === month && ahead(d, today);
   });
-  if (later >= 0) return later;
+  if (next >= 0) return next;
   const header = items.findIndex((it) => it.k === 'month' && it.key === month);
   if (header >= 0) return header;
-  return items.findIndex((it) => it.k === 'month' && it.key !== NO_MONTH && it.key < month);
+  const isMonth = (it: Item): it is Extract<Item, { k: 'month' }> => it.k === 'month' && it.key !== NO_MONTH;
+  const nextMonth = items.findIndex((it) => isMonth(it) && ahead(it.key, month));
+  if (nextMonth >= 0) return nextMonth;
+  // все месяцы — по другую сторону от дня: ближайший из них стоит последним
+  for (let i = items.length - 1; i >= 0; i--) if (isMonth(items[i])) return i;
+  return -1;
 }
 
-/** При открытии таблицы — один раз перемотать к сегодняшнему дню. */
-function useScrollToToday(virtualizer: { scrollToIndex: (i: number, o?: { align?: 'start' | 'center' | 'end' | 'auto' }) => void }, items: Item[]) {
+type Scroller = { scrollToIndex: (i: number, o?: { align?: 'start' | 'center' | 'end' | 'auto' }) => void };
+
+/** При открытии таблицы — один раз перемотать к дню target (обычно сегодня; без target — не перематывать). */
+function useScrollToDay(virtualizer: Scroller, items: Item[], target: ISODate | undefined, dir: SortDir) {
   const done = useRef(false);
   useEffect(() => {
-    if (done.current || !items.length) return;
+    if (done.current || !items.length || !target) return;
     done.current = true;
-    const idx = todayIndex(items, todayISO());
+    const idx = todayIndex(items, target, dir);
     if (idx < 0) return;
     // заголовок месяца над строкой — тоже в кадре
-    const target = idx > 0 && items[idx].k !== 'month' ? idx - 1 : idx;
+    const row = idx > 0 && items[idx].k !== 'month' ? idx - 1 : idx;
     const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (f: () => void) => setTimeout(f, 0);
-    raf(() => virtualizer.scrollToIndex(target, { align: 'start' }));
-  }, [items, virtualizer]);
+    raf(() => virtualizer.scrollToIndex(row, { align: 'start' }));
+  }, [items, virtualizer, target, dir]);
 }
 
 /** Для каждой строки — индекс заголовка её месяца (-1, если над строкой заголовка нет). */
@@ -453,12 +477,46 @@ export function TableView() {
       return next;
     });
 
-  const filtered = useMemo(() => applyFilters(doc, filters), [doc, filters]);
+  const [mode, setModePref] = useTableMode();
+  const [sort, setSort] = useTableSort();
+  /** Открытый из «Года» месяц (режим «Месяц»); null — сам календарь года. Только в памяти. */
+  const [openMonth, setOpenMonth] = useState<YearMonth | null>(null);
+  /** День, к которому перемотать открытый месяц (клик по дню в карточке года). */
+  const [focusDay, setFocusDay] = useState<ISODate | undefined>(undefined);
+  const [year, setYear] = useState(() => new Date().getFullYear());
+  const view: 'table' | 'year' | 'month' = mode === 'year' ? (openMonth ? 'month' : 'year') : 'table';
+
+  const setMode = (m: TableMode) => {
+    setModePref(m);
+    setOpenMonth(null);
+    setFocusDay(undefined);
+  };
+  const openMonthView = (m: YearMonth, day?: ISODate) => {
+    setOpenMonth(m);
+    setFocusDay(day);
+    setYear(Number(m.slice(0, 4)));
+  };
+  const backToYear = () => {
+    if (openMonth) setYear(Number(openMonth.slice(0, 4)));
+    setOpenMonth(null);
+    setFocusDay(undefined);
+  };
+
+  // В «Годе» и «Месяце» период задаёт сам вид — «С месяца / По месяц» из фильтров не действуют.
+  const periodIgnored = view !== 'table' && Boolean(filters.from || filters.to);
+  const filtered = useMemo(
+    () => applyFilters(doc, view === 'table' ? filters : { ...filters, from: '', to: '' }),
+    [doc, filters, view],
+  );
+  const scoped = useMemo(
+    () => (view === 'month' ? filtered.filter((e) => entryMonth(e) === openMonth) : filtered),
+    [filtered, view, openMonth],
+  );
 
   const table = useTable({
     features,
     columns,
-    data: filtered,
+    data: scoped,
     getRowId: (e: Entry) => e.id,
     state: { columnVisibility: colVis, columnOrder: layout.order, columnSizing: layout.sizing },
     onColumnVisibilityChange: (u) => {
@@ -477,16 +535,27 @@ export function TableView() {
   const [showEmpty, setShowEmpty] = useShowEmptyDays();
   const emptyHidden = showEmpty && narrowsEntries(filters);
   const emptyOn = showEmpty && !emptyHidden;
-  const currentMonth = todayISO().slice(0, 7);
-  const items = useMemo(
-    () =>
-      buildItems(
-        table.getRowModel().rows.map((r) => r.original),
-        doc,
-        emptyOn ? { currentMonth, from: filters.from || undefined, to: filters.to || undefined } : undefined,
-      ),
-    [table, filtered, doc, emptyOn, currentMonth, filters.from, filters.to],
-  );
+  const today = todayISO();
+  const currentMonth = today.slice(0, 7);
+  const items = useMemo(() => {
+    if (view === 'year') return [];
+    const empty: EmptyDaysOpts | undefined = !emptyOn
+      ? undefined
+      : view === 'month'
+        ? { currentMonth: openMonth!, from: openMonth!, to: openMonth! }
+        : { currentMonth, from: filters.from || undefined, to: filters.to || undefined };
+    return buildItems(
+      table.getRowModel().rows.map((r) => r.original),
+      doc,
+      empty,
+      sort,
+    );
+  }, [table, scoped, doc, emptyOn, currentMonth, filters.from, filters.to, sort, view, openMonth]);
+  /** К какому дню перемотать при открытии: в таблице — сегодня; в месяце — выбранный день или сегодня, если месяц текущий. */
+  const scrollTarget =
+    view === 'table' ? today : (focusDay ?? (openMonth === currentMonth ? today : undefined));
+  // Новый вид, месяц, день или порядок — список строится заново и снова перематывается к нужному дню.
+  const listKey = [view, openMonth ?? '', focusDay ?? '', sort].join(':');
   const visibleCols = table.getVisibleLeafColumns().map((c) => COL_BY_ID[c.id as ColId]);
 
   const resizeCol = (id: ColId, w: number) => table.setColumnSizing((prev) => ({ ...prev, [id]: clampWidth(w) }));
@@ -517,19 +586,50 @@ export function TableView() {
   };
   const menuIds = layout.order.filter((id) => id !== FIXED_COL) as ColId[];
 
+  const yearPrefix = year + '-';
+  const count =
+    view === 'year' ? filtered.filter((e) => entryMonth(e)?.startsWith(yearPrefix)).length : scoped.length;
+  const filterHint =
+    [
+      narrowsEntries(filters) ? 'Итоги посчитаны только по записям, подходящим под фильтр.' : '',
+      periodIgnored ? 'Период «С месяца / По месяц» здесь не действует.' : '',
+    ]
+      .filter(Boolean)
+      .join(' ') || undefined;
+
   return (
     <div className="view table-view">
       <FilterBar
         doc={doc}
         filters={filters}
         onChange={setFilters}
-        count={filtered.length}
+        count={count}
         showEmpty={showEmpty}
         onShowEmpty={setShowEmpty}
-        emptyHidden={emptyHidden}
+        emptyHidden={emptyHidden && view !== 'year'}
       />
-      {!mobile && (
-        <details className="col-menu">
+      <div className="table-toolbar">
+        <div className="seg" role="group" aria-label="Вид таблицы">
+          <button
+            type="button"
+            className={'seg-btn' + (view === 'table' ? ' on' : '')}
+            aria-pressed={view === 'table'}
+            onClick={() => setMode('table')}
+          >
+            Таблица
+          </button>
+          <button
+            type="button"
+            className={'seg-btn' + (view !== 'table' ? ' on' : '')}
+            aria-pressed={view !== 'table'}
+            onClick={() => setMode('year')}
+          >
+            Год
+          </button>
+        </div>
+        {view !== 'year' && <SortToggle dir={sort} onChange={setSort} />}
+        {!mobile && view !== 'year' && (
+          <details className="col-menu">
           <summary>Колонки</summary>
           <div className="col-menu-list">
             {menuIds.map((id, i) => {
@@ -574,22 +674,91 @@ export function TableView() {
             </button>
           </div>
         </details>
-      )}
-      {items.length === 0 ? (
-        <div className="empty">Записей нет. Добавьте первую строкой быстрого ввода сверху.</div>
-      ) : mobile ? (
-        <MobileList items={items} doc={doc} />
+        )}
+      </div>
+      {view === 'year' ? (
+        <YearView doc={doc} entries={filtered} year={year} onYear={setYear} onOpenMonth={openMonthView} hint={filterHint} />
       ) : (
-        <Grid
-          items={items}
-          cols={visibleCols}
-          doc={doc}
-          sizing={layout.sizing}
-          onResize={resizeCol}
-          onDropCol={dropCol}
-        />
+        <>
+          {view === 'month' && (
+            <MonthNav month={openMonth!} onBack={backToYear} onOpen={(m) => openMonthView(m)} hint={filterHint} />
+          )}
+          {items.length === 0 ? (
+            <div className="empty">
+              {view === 'month'
+                ? 'В этом месяце записей нет.'
+                : 'Записей нет. Добавьте первую строкой быстрого ввода сверху.'}
+            </div>
+          ) : mobile ? (
+            <MobileList key={listKey} items={items} doc={doc} scrollTo={scrollTarget} dir={sort} />
+          ) : (
+            <Grid
+              key={listKey}
+              items={items}
+              cols={visibleCols}
+              doc={doc}
+              sizing={layout.sizing}
+              onResize={resizeCol}
+              onDropCol={dropCol}
+              scrollTo={scrollTarget}
+              dir={sort}
+            />
+          )}
+        </>
       )}
     </div>
+  );
+}
+
+/** Переключатель порядка по дате: подпись говорит, как сейчас, нажатие меняет на обратный. */
+function SortToggle({ dir, onChange }: { dir: SortDir; onChange: (d: SortDir) => void }) {
+  const now = dir === 'desc' ? 'сначала новые' : 'сначала старые';
+  const other = dir === 'desc' ? 'сначала старые' : 'сначала новые';
+  return (
+    <button
+      type="button"
+      className="sort-toggle"
+      aria-label={`Порядок по дате: ${now}. Нажмите, чтобы ${other}`}
+      title={`Нажмите, чтобы ${other}`}
+      onClick={() => onChange(dir === 'desc' ? 'asc' : 'desc')}
+    >
+      {dir === 'desc' ? 'Сначала новые ↓' : 'Сначала старые ↑'}
+    </button>
+  );
+}
+
+function shiftMonth(m: YearMonth, by: number): YearMonth {
+  const [y, mm] = m.split('-').map(Number);
+  const d = new Date(y, mm - 1 + by, 1);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
+}
+
+/** Строка над таблицей одного месяца: «← Год» · «‹ Апрель» «Май 2026» «Июнь ›». */
+function MonthNav({ month, onBack, onOpen, hint }: {
+  month: YearMonth;
+  onBack: () => void;
+  onOpen: (m: YearMonth) => void;
+  hint?: string;
+}) {
+  const prev = shiftMonth(month, -1);
+  const next = shiftMonth(month, 1);
+  const name = (m: YearMonth) => monthLabel(m).split(' ')[0];
+  return (
+    <>
+      <div className="month-nav">
+        <button type="button" className="month-nav-back" onClick={onBack}>
+          ← Год
+        </button>
+        <button type="button" aria-label={`Предыдущий месяц: ${monthLabel(prev)}`} onClick={() => onOpen(prev)}>
+          ‹ {name(prev)}
+        </button>
+        <h2 className="month-nav-title">{monthLabel(month)}</h2>
+        <button type="button" aria-label={`Следующий месяц: ${monthLabel(next)}`} onClick={() => onOpen(next)}>
+          {name(next)} ›
+        </button>
+      </div>
+      {hint && <p className="hint">{hint}</p>}
+    </>
   );
 }
 
@@ -711,6 +880,8 @@ function Grid({
   sizing,
   onResize,
   onDropCol,
+  scrollTo,
+  dir,
 }: {
   items: Item[];
   cols: ColMeta[];
@@ -718,6 +889,8 @@ function Grid({
   sizing: ColumnSizingState;
   onResize: (id: ColId, w: number) => void;
   onDropCol: (dragId: ColId, targetId: ColId, side: DropSide) => void;
+  scrollTo?: ISODate;
+  dir: SortDir;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [editing, setEditing] = useState<EditPos | null>(null);
@@ -773,7 +946,7 @@ function Grid({
     overscan: 10,
     initialRect: { width: 1200, height: 800 },
   });
-  useScrollToToday(virtualizer, items);
+  useScrollToDay(virtualizer, items, scrollTo, dir);
   const headerOf = useMemo(() => monthHeaderIndex(items), [items]);
   // высота шапки столбцов — под ней прилипает заголовок месяца
   const headRef = useRef<HTMLDivElement>(null);
@@ -946,7 +1119,7 @@ function Grid({
               return (
                 <div
                   key={vi.key}
-                  className={'grid-row empty-row' + (it.weekend ? ' weekend' : '')}
+                  className="grid-row empty-row"
                   style={style}
                   data-index={vi.index}
                   ref={virtualizer.measureElement}
@@ -956,7 +1129,9 @@ function Grid({
                     <div key={c.id} className={'gc gc-' + c.id} role="gridcell" data-col={c.id}>
                       {c.id === 'date' && (
                         <>
-                          <span className="empty-date">{formatDate(it.key, true)}</span>
+                          <span className={'empty-date' + (it.weekend ? ' ' + WEEKEND_CLASS : '')}>
+                            {formatDate(it.key, true)}
+                          </span>
                           <AddDayButton date={it.key} empty />
                         </>
                       )}
@@ -1059,7 +1234,11 @@ function cellText(e: Entry, col: ColId, doc: TrackerDoc): React.ReactNode {
         </span>
       );
     case 'date':
-      return <span className={e.dateTentative ? 'tentative' : ''}>{formatDateRange(e, true)}</span>;
+      return (
+        <span className={[e.dateTentative ? 'tentative' : '', isWeekend(e.date) ? WEEKEND_CLASS : ''].filter(Boolean).join(' ')}>
+          {formatDateRange(e, true)}
+        </span>
+      );
     case 'time':
       return formatTime(e);
     case 'title':
@@ -1305,7 +1484,7 @@ export function TotalsLine({ t, settings }: { t: MonthTotals; settings: Settings
 
 // ---------- компактный список (телефон) ----------
 
-function MobileList({ items, doc }: { items: Item[]; doc: TrackerDoc }) {
+function MobileList({ items, doc, scrollTo, dir }: { items: Item[]; doc: TrackerDoc; scrollTo?: ISODate; dir: SortDir }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const ui = useUi();
   const virtualizer = useVirtualizer({
@@ -1319,7 +1498,7 @@ function MobileList({ items, doc }: { items: Item[]; doc: TrackerDoc }) {
     overscan: 8,
     initialRect: { width: 390, height: 700 },
   });
-  useScrollToToday(virtualizer, items);
+  useScrollToDay(virtualizer, items, scrollTo, dir);
   const headerOf = useMemo(() => monthHeaderIndex(items), [items]);
   return (
     <div className="mlist-scroll" ref={scrollRef}>
@@ -1351,12 +1530,12 @@ function MobileList({ items, doc }: { items: Item[]; doc: TrackerDoc }) {
             return (
               <div
                 key={vi.key}
-                className={'mlist-empty' + (it.weekend ? ' weekend' : '')}
+                className="mlist-empty"
                 style={style}
                 data-index={vi.index}
                 ref={virtualizer.measureElement}
               >
-                <span className="empty-date">{formatDate(it.key, true)}</span>
+                <span className={'empty-date' + (it.weekend ? ' ' + WEEKEND_CLASS : '')}>{formatDate(it.key, true)}</span>
                 <AddDayButton date={it.key} empty />
               </div>
             );
@@ -1371,7 +1550,7 @@ function MobileList({ items, doc }: { items: Item[]; doc: TrackerDoc }) {
             >
               <button type="button" className="mlist-row" onClick={() => ui.openEntry(e.id)}>
                 <span className={'mr-date' + (e.dateTentative ? ' tentative' : '')}>
-                  {formatDateRange(e) || '—'}
+                  <span className={isWeekend(e.date) ? WEEKEND_CLASS : undefined}>{formatDateRange(e) || '—'}</span>
                   <small>{formatTime(e)}</small>
                 </span>
                 <span className="mr-main">

@@ -44,7 +44,17 @@ export function daysBetween(a: ISODate, b: ISODate): number {
   return Math.round((parseISODate(b).getTime() - parseISODate(a).getTime()) / 86400000);
 }
 
-const WEEKDAYS_SHORT = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+/** Суббота или воскресенье. */
+export function isWeekend(s?: ISODate): boolean {
+  if (!s) return false;
+  const wd = parseISODate(s).getDay();
+  return wd === 0 || wd === 6;
+}
+
+/** Класс рамки вокруг даты выходного дня (цвет в таблице занят типами задач, поэтому выходные — рамкой). */
+export const WEEKEND_CLASS = 'date-weekend';
+
+const WEEKDAYS_SHORT =['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
 export const WEEKDAYS_MON_FIRST = ['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'];
 
 /** «12.12» или «12.12.2025», если год не текущий. */

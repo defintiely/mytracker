@@ -143,7 +143,8 @@ describe('Таблица: ширина и порядок колонок', () => 
     fireEvent.click(firstDateCell());
     fireEvent.keyDown(dateEditor(), { key: 'Tab' });
     const title = screen.getByRole('textbox', { name: 'Название' }) as HTMLInputElement;
-    expect(title.value).toBe('Первая');
+    // по умолчанию «сначала новые»: верхняя запись — 2-е число
+    expect(title.value).toBe('Вторая');
     fireEvent.keyDown(title, { key: 'Tab' });
     expect(screen.getByRole('textbox', { name: 'Время' })).toBeTruthy();
   });

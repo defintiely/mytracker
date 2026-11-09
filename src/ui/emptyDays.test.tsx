@@ -7,7 +7,7 @@ import { store } from '../store/store';
 import { emptyDoc, newEntry } from '../model/entry';
 import { App } from '../App';
 import { TableView, buildItems, monthHeaderIndex, pinnedMonth, todayIndex } from './TableView';
-import { SHOW_EMPTY_DAYS_KEY, setShowEmptyDays } from './tablePrefs';
+import { SHOW_EMPTY_DAYS_KEY, setShowEmptyDays, setTableSort } from './tablePrefs';
 
 // jsdom не считает раскладку: без размеров окна прокрутки виртуализатор не рисует ни одной строки.
 // Окно высокое, чтобы месяц целиком (31 строка) помещался; что рисуется не всё — отдельный тест ниже.
@@ -67,20 +67,23 @@ describe('Таблица: пустые дни', () => {
     expect(emptyRows()).toHaveLength(30);
     expect(screen.getByRole('button', { name: 'Добавить на 01.05.2030' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Добавить на 10.05.2030' })).toBeNull();
-    expect(emptyDates()[0]).toBe('ср 01.05.2030');
-    // Выходные помечены.
+    // по умолчанию «сначала новые»: первым идёт 31-е
+    expect(emptyDates()[0]).toBe('пт 31.05.2030');
+    // Выходные — рамкой вокруг даты, строка не закрашена и не приглушена.
     const sat = screen.getByRole('button', { name: 'Добавить на 04.05.2030' }).closest('.empty-row')!;
-    expect(sat.classList.contains('weekend')).toBe(true);
-    expect(screen.getByRole('button', { name: 'Добавить на 06.05.2030' }).closest('.empty-row')!.classList.contains('weekend')).toBe(false);
+    expect(sat.querySelector('.empty-date')!.classList.contains('date-weekend')).toBe(true);
+    expect(sat.classList.contains('weekend')).toBe(false);
+    const mon = screen.getByRole('button', { name: 'Добавить на 06.05.2030' }).closest('.empty-row')!;
+    expect(mon.querySelector('.empty-date')!.classList.contains('date-weekend')).toBe(false);
 
-    // Запись 10-го стоит между 9-м и 11-м.
+    // Запись 10-го стоит между 11-м и 9-м.
     const body = document.querySelector('.grid-body')!;
     const order = [...body.children]
       .sort((a, b) => Number((a as HTMLElement).dataset.index) - Number((b as HTMLElement).dataset.index))
       .map((el) => (el.classList.contains('entry-row') ? 'запись' : el.querySelector('.empty-date')?.textContent ?? el.className));
     const i = order.indexOf('запись');
-    expect(order[i - 1]).toBe('чт 09.05.2030');
-    expect(order[i + 1]).toBe('сб 11.05.2030');
+    expect(order[i - 1]).toBe('сб 11.05.2030');
+    expect(order[i + 1]).toBe('чт 09.05.2030');
     // Итоги месяца на месте.
     expect(document.querySelector('.grid-total')).toBeTruthy();
 
@@ -114,6 +117,7 @@ describe('Таблица: пустые дни', () => {
       newEntry({ title: 'Вторая', date: '2030-05-04', status: 'booked', amount: 200 }),
     );
     act(() => setShowEmptyDays(true));
+    act(() => setTableSort('asc'));
     render(<TableView />);
     expect(emptyRows()).toHaveLength(29);
     // пустые строки не редактируются: в них нет ячеек-полей
@@ -271,18 +275,42 @@ describe('Телефон: компактный список', () => {
 
 describe('перемотка к сегодняшнему дню', () => {
   const mk = (date: string) => newEntry({ title: date, date });
-  it('todayIndex: запись на сегодня → её строка; иначе ближайшая дальше в месяце; иначе заголовок месяца', () => {
+  it('todayIndex «сначала старые»: запись на сегодня → её строка; иначе ближайшая дальше в месяце; иначе заголовок месяца', () => {
     const doc = emptyDoc();
-    const items = buildItems([mk('2030-05-03'), mk('2030-05-20'), mk('2030-04-10')], doc);
+    const items = buildItems([mk('2030-05-03'), mk('2030-05-20'), mk('2030-04-10')], doc, undefined, 'asc');
     const at = (i: number) => items[i];
-    const i1 = todayIndex(items, '2030-05-20');
+    const i1 = todayIndex(items, '2030-05-20', 'asc');
     expect(at(i1).k === 'row' && (at(i1) as { entry: { date?: string } }).entry.date).toBe('2030-05-20');
-    const i2 = todayIndex(items, '2030-05-10'); // сегодня записи нет → следующая в месяце
+    const i2 = todayIndex(items, '2030-05-10', 'asc'); // сегодня записи нет → следующая ниже (позже) в месяце
     expect((at(i2) as { entry: { date?: string } }).entry.date).toBe('2030-05-20');
-    const i3 = todayIndex(items, '2030-05-25'); // после всех записей месяца → заголовок месяца
+    const i3 = todayIndex(items, '2030-05-25', 'asc'); // после всех записей месяца → заголовок месяца
     expect(at(i3)).toMatchObject({ k: 'month', key: '2030-05' });
-    const i4 = todayIndex(items, '2030-06-02'); // месяца нет → ближайший прошедший
+    const i4 = todayIndex(items, '2030-06-02', 'asc'); // месяца нет, ниже ничего → ближайший прошедший
     expect(at(i4)).toMatchObject({ k: 'month', key: '2030-05' });
+    const i5 = todayIndex(items, '2030-03-15', 'asc'); // месяца нет → ближайший ниже, т. е. следующий
+    expect(at(i5)).toMatchObject({ k: 'month', key: '2030-04' });
+  });
+  it('todayIndex «сначала новые»: ближайшая строка ниже — более ранняя дата', () => {
+    const items = buildItems([mk('2030-05-03'), mk('2030-05-20'), mk('2030-04-10')], emptyDoc(), undefined, 'desc');
+    const at = (i: number) => items[i];
+    const dateAt = (i: number) => (at(i) as { entry: { date?: string } }).entry.date;
+    expect(dateAt(todayIndex(items, '2030-05-20', 'desc'))).toBe('2030-05-20');
+    // сегодня записи нет → следующая ниже, то есть 3-е (раньше), а не 20-е
+    expect(dateAt(todayIndex(items, '2030-05-10', 'desc'))).toBe('2030-05-03');
+    // раньше всех записей месяца → заголовок месяца
+    expect(at(todayIndex(items, '2030-05-01', 'desc'))).toMatchObject({ k: 'month', key: '2030-05' });
+    // месяца нет → ближайший прошедший (он ниже)
+    expect(at(todayIndex(items, '2030-06-02', 'desc'))).toMatchObject({ k: 'month', key: '2030-05' });
+    // месяца нет, ниже ничего → ближайший с другой стороны
+    expect(at(todayIndex(items, '2030-03-15', 'desc'))).toMatchObject({ k: 'month', key: '2030-04' });
+    // по умолчанию — «сначала новые»
+    expect(todayIndex(items, '2030-05-10')).toBe(todayIndex(items, '2030-05-10', 'desc'));
+  });
+  it('с пустыми днями в обе стороны — строка пустого сегодняшнего дня', () => {
+    for (const dir of ['asc', 'desc'] as const) {
+      const items = buildItems([mk('2030-05-03')], emptyDoc(), { currentMonth: '2030-05' }, dir);
+      expect(items[todayIndex(items, '2030-05-07', dir)]).toMatchObject({ k: 'empty', key: '2030-05-07' });
+    }
   });
   it('с пустыми днями — строка пустого сегодняшнего дня', () => {
     const items = buildItems([mk('2030-05-03')], emptyDoc(), { currentMonth: '2030-05' });
