@@ -76,7 +76,7 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Канбан' }));
     fireEvent.click(screen.getByText('Проект сайта'));
     const dialog = screen.getByRole('dialog');
-    const title = within(dialog).getByLabelText('Название');
+    const title = within(dialog).getByLabelText('Что сделать');
     fireEvent.focus(title);
     fireEvent.change(title, { target: { value: 'Проект сайта Анны' } });
     fireEvent.blur(title);
@@ -87,6 +87,8 @@ describe('App', () => {
     expect(after.status).toBe('shot');
     expect(after.history?.at(-1)?.text).toContain('Сделано');
 
+    // «Где деньги» — в разделе «Оплата и инвойс», он открывается кнопкой из «Добавить ещё».
+    fireEvent.click(within(dialog).getByRole('button', { name: '+ Оплата и инвойс' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Всё получено' }));
     expect(store.getDoc().entries[0].money).toEqual([expect.objectContaining({ amount: 500, where: 'owner' })]);
   });
@@ -102,15 +104,16 @@ describe('App', () => {
     const dialog = screen.getByRole('dialog');
     expect(within(dialog).queryByLabelText('Вид')).toBeNull();
 
-    fireEvent.click(within(dialog).getByRole('button', { name: '+ Новый источник' }));
-    fireEvent.change(within(dialog).getByLabelText('Имя нового источника'), { target: { value: 'Петя' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Добавить источник' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Источник: выбрать' }));
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Поиск: источник' }), { target: { value: 'Петя' } });
+    fireEvent.click(within(dialog).getByRole('option', { name: '+ Добавить «Петя»' }));
     const doc1 = store.getDoc();
     expect(doc1.sources.map((s) => s.name)).toEqual(['Петя']);
     expect(doc1.entries[0].sourceId).toBe(doc1.sources[0].id);
 
-    fireEvent.click(within(dialog).getByRole('button', { name: '+ Новый контакт' }));
-    fireEvent.change(within(dialog).getByPlaceholderText('Имя'), { target: { value: 'Анна' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Контакт: выбрать' }));
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Поиск: контакт' }), { target: { value: 'Анна' } });
+    fireEvent.click(within(dialog).getByRole('option', { name: '+ Добавить «Анна»' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Сохранить' }));
     const doc2 = store.getDoc();
     expect(doc2.contacts.map((c) => c.name)).toEqual(['Анна']);
@@ -239,7 +242,7 @@ describe('App', () => {
     render(<App />);
     fireEvent.click(screen.getByRole('button', { name: 'Новая запись' }));
     const dialog = screen.getByRole('dialog');
-    const title = within(dialog).getByLabelText('Название');
+    const title = within(dialog).getByLabelText('Что сделать');
     fireEvent.focus(title);
     fireEvent.change(title, { target: { value: 'Зубной' } });
     fireEvent.blur(title);

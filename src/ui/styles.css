@@ -850,6 +850,275 @@ button.chip {
   flex-wrap: wrap;
   gap: 6px;
 }
+/* ---------- карточка записи: главное сверху, разделы «Добавить ещё» ---------- */
+.entry-card {
+  gap: 16px;
+}
+.entry-card .field > label,
+.entry-card .field-label,
+.picker-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.entry-card .field input:not([type='checkbox']),
+.entry-card .field select,
+.entry-card .field textarea {
+  min-height: 44px;
+  border-radius: 10px;
+  padding: 6px 12px;
+}
+.entry-card .field .title-input {
+  min-height: 50px;
+}
+.type-chips,
+.add-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.type-chip {
+  min-height: var(--touch);
+  padding: 0 14px;
+  border-radius: 999px;
+  gap: 8px;
+}
+.type-chip .type-dot {
+  width: 10px;
+  height: 10px;
+}
+.type-chip.on {
+  background: color-mix(in srgb, var(--tc, var(--accent)) 35%, var(--surface));
+  border-color: var(--tc, var(--accent));
+  font-weight: 600;
+}
+.entry-card .status-row .chip {
+  min-height: var(--touch);
+  padding: 0 14px;
+  font-size: 14px;
+}
+.when {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.when-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+.when-row.all-day {
+  grid-template-columns: minmax(0, 1fr);
+}
+.when-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+.when-checks .check {
+  min-height: 32px;
+}
+.when-extra {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 8px;
+}
+.entry-card .when-extra .field > label {
+  font-weight: 400;
+  color: var(--muted);
+  font-size: 12px;
+}
+.entry-card .when-extra .field input:not([type='checkbox']) {
+  min-height: var(--touch);
+}
+.add-chip {
+  min-height: var(--touch);
+  padding: 0 14px;
+  border: 1px dashed color-mix(in srgb, var(--muted) 60%, var(--border));
+  border-radius: 999px;
+  background: var(--surface);
+}
+.card-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.card-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.card-section-head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+.card-section-remove {
+  color: var(--muted);
+  border-color: transparent;
+  background: transparent;
+}
+.checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ---------- Picker: «Выбрать» (контакт и источник) ---------- */
+.picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.picker-trigger {
+  justify-content: flex-start;
+  gap: 10px;
+  width: 100%;
+  min-height: 46px;
+  padding: 0 12px;
+  border-radius: 10px;
+  color: var(--muted);
+  text-align: left;
+}
+.picker-ico,
+.picker-chev {
+  display: inline-flex;
+  color: var(--muted);
+}
+.picker-text {
+  flex: 1;
+}
+.picker-drop {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.12);
+  overflow: hidden;
+}
+.picker-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  min-height: 46px;
+  color: var(--muted);
+}
+.picker-search input {
+  flex: 1;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  min-height: 44px;
+  padding: 0;
+}
+.picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.picker-opt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--surface-2);
+  cursor: pointer;
+}
+.picker-opt.active {
+  background: var(--surface-2);
+}
+.picker-add {
+  font-weight: 600;
+  color: var(--accent);
+  border-top: 1px solid var(--border);
+}
+.picker-add.active {
+  background: var(--ok-bg);
+}
+.picker-empty {
+  padding: 10px 12px;
+  border-top: 1px solid var(--surface-2);
+}
+.picker-names {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.picker-name {
+  font-weight: 600;
+  font-size: 15px;
+}
+.picker-sub {
+  font-size: 13px;
+}
+.picker-plate {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 6px 6px 6px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--ok-bg);
+}
+.picker-plate .picker-sub {
+  color: var(--ok-text);
+}
+.picker-av {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.picker-av.small {
+  width: 26px;
+  height: 26px;
+  font-size: 12px;
+}
+.picker-x {
+  min-width: var(--touch);
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+}
+.picker-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.picker-note {
+  flex-basis: 100%;
+}
+.picker-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.picker-form .field input {
+  width: 100%;
+  min-height: 44px;
+}
+
 .money-editor {
   display: flex;
   flex-direction: column;
@@ -1554,6 +1823,23 @@ details > summary {
   .entry-card {
     margin-left: -8px;
     padding-left: 8px;
+  }
+  /* Карточка во весь экран: прокручивается тело, кнопки внизу закреплены. */
+  .modal.entry-modal {
+    height: 100dvh;
+    min-height: 0;
+  }
+  .entry-modal .modal-body {
+    flex: 1;
+  }
+  .entry-modal .modal-foot .card-create {
+    flex: 1;
+    min-height: 50px;
+    font-weight: 700;
+  }
+  .card-section-remove,
+  .when-checks .check {
+    min-height: var(--touch);
   }
   .lists {
     grid-template-columns: minmax(0, 1fr);

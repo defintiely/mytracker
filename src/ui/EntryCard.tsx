@@ -1,16 +1,53 @@
-// Карточка записи: все поля Entry. Существующая запись правится сразу в store, новая — черновиком до «Создать».
-import { useState } from 'react';
-import type { ChecklistItem, Contact, Entry, EntryKind, EntryStatus, TrackerDoc } from '../model/types';
-import { KIND_LABELS, STATUS_LABELS } from '../model/types';
+// Карточка записи: главное сверху, остальное — разделами по кнопкам «Добавить ещё».
+// Существующая запись правится сразу в store, новая — черновиком до «Создать».
+import { useState, type ReactNode } from 'react';
+import type { ChecklistItem, Contact, Entry, EntryStatus } from '../model/types';
+import { STATUS_LABELS } from '../model/types';
 import { newId, patchEntry } from '../model/entry';
 import { typeColor, typeHasMoney, typeOptions } from '../model/taskTypes';
 import { store } from '../store/store';
 import { useTracker } from '../store/useTracker';
 import { CommitInput, CommitTextarea, Modal, PayIcon, StatusBadge, parseAmount, useIsMobile } from './common';
 import { MoneyEditor } from './MoneyEditor';
-import { digits, makeContact, makeSource, mapLink, uniqueSorted, waNumber, withHistory } from './util';
+import { ArrowIcon, PersonIcon, Picker, type PickerItem } from './Picker';
+import { digits, findSource, makeContact, makeSource, mapLink, uniqueSorted, waNumber, withHistory } from './util';
 
 const STATUSES: EntryStatus[] = ['lead', 'booked', 'shot', 'editing', 'delivered', 'done', 'cancelled'];
+
+type SectionKey = 'place' | 'category' | 'pay' | 'notes' | 'checklist';
+
+const SECTIONS: { key: SectionKey; chip: string; title: string }[] = [
+  { key: 'place', chip: '+ Место', title: 'Место' },
+  { key: 'category', chip: '+ Категория', title: 'Категория' },
+  { key: 'pay', chip: '+ Оплата и инвойс', title: 'Оплата и инвойс' },
+  { key: 'notes', chip: '+ Заметка', title: 'Заметка' },
+  { key: 'checklist', chip: '+ Чек-лист', title: 'Чек-лист' },
+];
+
+/** Есть ли в разделе данные — такой раздел показывается сразу, без кнопки. */
+function sectionHasData(e: Entry, key: SectionKey): boolean {
+  switch (key) {
+    case 'place':
+      return Boolean(e.location || e.mapUrl);
+    case 'category':
+      return Boolean(e.category);
+    case 'pay':
+      return e.money.length > 0 || Boolean(e.invoiceNo);
+    case 'notes':
+      return Boolean(e.notes);
+    case 'checklist':
+      return e.checklist.length > 0;
+  }
+}
+
+/** Что очистить, когда раздел убирают. */
+const SECTION_CLEAR: Record<SectionKey, Partial<Entry>> = {
+  place: { location: undefined, mapUrl: undefined },
+  category: { category: undefined },
+  pay: { money: [], invoiceNo: undefined },
+  notes: { notes: undefined },
+  checklist: { checklist: [] },
+};
 
 export function EntryCard({
   id,
@@ -24,6 +61,8 @@ export function EntryCard({
   const doc = useTracker();
   const mobile = useIsMobile();
   const [draft, setDraft] = useState<Entry | undefined>(initialDraft);
+  const [opened, setOpened] = useState<SectionKey[]>([]);
+  const [justOpened, setJustOpened] = useState<SectionKey | undefined>();
   const stored = id ? doc.entries.find((x) => x.id === id) : undefined;
   const e = draft ?? stored;
   if (!e) return null;
@@ -47,15 +86,151 @@ export function EntryCard({
     }
   };
 
-  const personal = !typeHasMoney(doc.settings, e.type);
+  const hasMoney = typeHasMoney(doc.settings, e.type);
   const color = typeColor(doc.settings, e.type);
   const typeChoices = typeOptions(doc.settings, e.type);
   const locations = uniqueSorted(doc.entries.map((x) => x.location));
   const categories = uniqueSorted([...doc.settings.categories, ...doc.entries.map((x) => x.category)]);
 
+  const available = SECTIONS.filter((s) => s.key !== 'pay' || hasMoney);
+  const isShown = (k: SectionKey) => opened.includes(k) || sectionHasData(e, k);
+  const shown = available.filter((s) => isShown(s.key));
+  const hidden = available.filter((s) => !isShown(s.key));
+
+  const openSection = (k: SectionKey) => {
+    setOpened((list) => (list.includes(k) ? list : [...list, k]));
+    setJustOpened(k);
+  };
+  const removeSection = (k: SectionKey) => {
+    setOpened((list) => list.filter((x) => x !== k));
+    if (sectionHasData(e, k)) apply(SECTION_CLEAR[k]);
+  };
+
+  // ---------- контакт и источник ----------
+
+  const contactItems: PickerItem[] = doc.contacts
+    .filter((c) => !c.deleted || c.id === e.contactId)
+    .map((c) => ({
+      id: c.id,
+      label: c.name || c.phones[0] || 'без имени',
+      sub: c.name ? c.phones[0] : undefined,
+      search: c.phones.join(' '),
+    }));
+  const sourceItems: PickerItem[] = doc.sources
+    .filter((s) => !s.deleted || s.id === e.sourceId)
+    .map((s) => ({ id: s.id, label: s.name, search: s.aliases.join(' ') }));
+
+  const contact = doc.contacts.find((c) => c.id === e.contactId);
+
+  const createContact = (name: string, extra: { phone?: string }) => {
+    const nc = makeContact({ name, phones: extra.phone ? [extra.phone] : [] });
+    store.upsertContact(nc);
+    return nc.id;
+  };
+  const createSource = (name: string) => {
+    const existing = findSource(doc.sources, name);
+    if (existing) return existing.id;
+    const src = makeSource(name);
+    store.upsertSource(src);
+    return src.id;
+  };
+
+  // ---------- разделы «Добавить ещё» ----------
+
+  const sectionBody = (k: SectionKey): ReactNode => {
+    const focus = justOpened === k;
+    switch (k) {
+      case 'place':
+        return (
+          <>
+            <div className="field">
+              <label htmlFor="ec-loc">Место</label>
+              <div className="row gap">
+                <CommitInput
+                  id="ec-loc"
+                  list="ec-locations"
+                  value={e.location ?? ''}
+                  autoFocus={focus}
+                  onCommit={(v) => apply({ location: v.trim() || undefined })}
+                />
+                {mapLink(e) && (
+                  <a className="btn" href={mapLink(e)} target="_blank" rel="noreferrer">
+                    Карта
+                  </a>
+                )}
+              </div>
+              <datalist id="ec-locations">
+                {locations.map((l) => (
+                  <option key={l} value={l} />
+                ))}
+              </datalist>
+            </div>
+            <div className="field">
+              <label htmlFor="ec-map">Ссылка на карту</label>
+              <CommitInput
+                id="ec-map"
+                value={e.mapUrl ?? ''}
+                placeholder="https://maps.app.goo.gl/…"
+                onCommit={(v) => apply({ mapUrl: v.trim() || undefined })}
+              />
+            </div>
+          </>
+        );
+      case 'category':
+        return (
+          <div className="field">
+            <label htmlFor="ec-cat">Категория</label>
+            <CommitInput
+              id="ec-cat"
+              list="ec-categories"
+              value={e.category ?? ''}
+              autoFocus={focus}
+              onCommit={(v) => apply({ category: v.trim() || undefined })}
+            />
+            <datalist id="ec-categories">
+              {categories.map((c) => (
+                <option key={c} value={c} />
+              ))}
+            </datalist>
+          </div>
+        );
+      case 'pay':
+        return (
+          <>
+            <MoneyEditor entry={e} sources={doc.sources} onChange={(money) => apply({ money })} />
+            <div className="field">
+              <label htmlFor="ec-inv">№ инвойса</label>
+              <CommitInput
+                id="ec-inv"
+                value={e.invoiceNo ?? ''}
+                autoFocus={focus}
+                onCommit={(v) => apply({ invoiceNo: v.trim() || undefined })}
+              />
+            </div>
+          </>
+        );
+      case 'notes':
+        return (
+          <div className="field">
+            <label htmlFor="ec-notes">Заметки</label>
+            <CommitTextarea
+              id="ec-notes"
+              rows={3}
+              value={e.notes ?? ''}
+              autoFocus={focus}
+              onCommit={(v) => apply({ notes: v || undefined })}
+            />
+          </div>
+        );
+      case 'checklist':
+        return <Checklist items={e.checklist} autoFocus={focus} onChange={(checklist) => apply({ checklist })} />;
+    }
+  };
+
   return (
     <Modal
       wide
+      className="entry-modal"
       onClose={onClose}
       title={
         <span className="card-title-row">
@@ -71,7 +246,7 @@ export function EntryCard({
             <button type="button" onClick={onClose}>
               Отмена
             </button>
-            <button type="button" className="primary" onClick={create}>
+            <button type="button" className="primary card-create" onClick={create}>
               Создать
             </button>
           </>
@@ -89,25 +264,27 @@ export function EntryCard({
     >
       <div className={'entry-card' + (mobile ? ' mobile' : '')} style={{ ['--tc' as string]: color }}>
         <div className="field">
-          <label htmlFor="ec-title">Название</label>
+          <label htmlFor="ec-title">Что сделать</label>
           <CommitInput
             id="ec-title"
             className="title-input"
             value={e.title}
-            placeholder="Например: Проект сайта для Альфы"
+            placeholder="Например: проект сайта для Альфы"
             onCommit={(v) => apply({ title: v })}
             autoFocus={isNew}
           />
         </div>
 
         <div className="field">
-          <label>Тип</label>
-          <div className="seg">
+          <span className="field-label" id="ec-type-label">
+            Тип
+          </span>
+          <div className="type-chips" role="group" aria-labelledby="ec-type-label">
             {typeChoices.map((t) => (
               <button
                 type="button"
                 key={t.id}
-                className={'seg-btn' + (e.type === t.id ? ' on' : '')}
+                className={'type-chip' + (e.type === t.id ? ' on' : '')}
                 aria-pressed={e.type === t.id}
                 style={{ ['--tc' as string]: t.color }}
                 onClick={() => apply({ type: t.id })}
@@ -119,44 +296,10 @@ export function EntryCard({
           </div>
         </div>
 
-        <div className="grid2">
-          <div className="field">
-            <label htmlFor="ec-cat">Категория</label>
-            <CommitInput
-              id="ec-cat"
-              list="ec-categories"
-              value={e.category ?? ''}
-              onCommit={(v) => apply({ category: v.trim() || undefined })}
-            />
-            <datalist id="ec-categories">
-              {categories.map((c) => (
-                <option key={c} value={c} />
-              ))}
-            </datalist>
-          </div>
-        </div>
-
-        <div className="field">
-          <label>Переместить в…</label>
-          <div className="status-row">
-            {STATUSES.map((s) => (
-              <button
-                type="button"
-                key={s}
-                className={'chip' + (e.status === s ? ' on' : '')}
-                onClick={() => apply({ status: s })}
-              >
-                {STATUS_LABELS[s]}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <fieldset className="block">
-          <legend>Когда</legend>
-          <div className="grid3">
+        <div className="when">
+          <div className={'when-row' + (e.allDay ? ' all-day' : '')}>
             <div className="field">
-              <label htmlFor="ec-date">Дата</label>
+              <label htmlFor="ec-date">Когда</label>
               <input
                 id="ec-date"
                 type="date"
@@ -164,26 +307,30 @@ export function EntryCard({
                 onChange={(ev) => apply({ date: ev.target.value || undefined })}
               />
             </div>
-            <div className="field">
-              <label htmlFor="ec-dateEnd">По</label>
-              <input
-                id="ec-dateEnd"
-                type="date"
-                value={e.dateEnd ?? ''}
-                onChange={(ev) => apply({ dateEnd: ev.target.value || undefined })}
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="ec-am">Засчитать в месяц</label>
-              <input
-                id="ec-am"
-                type="month"
-                value={e.accountingMonth ?? ''}
-                onChange={(ev) => apply({ accountingMonth: ev.target.value || undefined })}
-              />
-            </div>
+            {!e.allDay && (
+              <>
+                <div className="field">
+                  <label htmlFor="ec-ts">С</label>
+                  <input
+                    id="ec-ts"
+                    type="time"
+                    value={e.timeStart ?? ''}
+                    onChange={(ev) => apply({ timeStart: ev.target.value || undefined })}
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor="ec-te">До</label>
+                  <input
+                    id="ec-te"
+                    type="time"
+                    value={e.timeEnd ?? ''}
+                    onChange={(ev) => apply({ timeEnd: ev.target.value || undefined })}
+                  />
+                </div>
+              </>
+            )}
           </div>
-          <div className="row gap wrap">
+          <div className="when-checks">
             <label className="check">
               <input type="checkbox" checked={e.allDay} onChange={(ev) => apply({ allDay: ev.target.checked })} /> Весь
               день
@@ -194,122 +341,131 @@ export function EntryCard({
                 checked={e.dateTentative}
                 onChange={(ev) => apply({ dateTentative: ev.target.checked })}
               />{' '}
-              Под вопросом
+              Дата под вопросом
             </label>
           </div>
-          {!e.allDay && (
-            <div className="grid3">
-              <div className="field">
-                <label htmlFor="ec-ts">С</label>
-                <input
-                  id="ec-ts"
-                  type="time"
-                  value={e.timeStart ?? ''}
-                  onChange={(ev) => apply({ timeStart: ev.target.value || undefined })}
-                />
-              </div>
-              <div className="field">
-                <label htmlFor="ec-te">До</label>
-                <input
-                  id="ec-te"
-                  type="time"
-                  value={e.timeEnd ?? ''}
-                  onChange={(ev) => apply({ timeEnd: ev.target.value || undefined })}
-                />
-              </div>
-            </div>
-          )}
-          <div className="field">
-            <label htmlFor="ec-tn">Примечание ко времени</label>
-            <CommitInput
-              id="ec-tn"
-              value={e.timeNote ?? ''}
-              placeholder="вечер, уточнить…"
-              onCommit={(v) => apply({ timeNote: v.trim() || undefined })}
-            />
-          </div>
-        </fieldset>
-
-        <fieldset className="block">
-          <legend>Где</legend>
-          <div className="field">
-            <label htmlFor="ec-loc">Место</label>
-            <div className="row gap">
-              <CommitInput
-                id="ec-loc"
-                list="ec-locations"
-                value={e.location ?? ''}
-                onCommit={(v) => apply({ location: v.trim() || undefined })}
+          <div className="when-extra">
+            <div className="field">
+              <label htmlFor="ec-dateEnd">По (если несколько дней)</label>
+              <input
+                id="ec-dateEnd"
+                type="date"
+                value={e.dateEnd ?? ''}
+                onChange={(ev) => apply({ dateEnd: ev.target.value || undefined })}
               />
-              {mapLink(e) && (
-                <a className="btn" href={mapLink(e)} target="_blank" rel="noreferrer">
-                  Карта
-                </a>
-              )}
             </div>
-            <datalist id="ec-locations">
-              {locations.map((l) => (
-                <option key={l} value={l} />
-              ))}
-            </datalist>
-          </div>
-          <div className="field">
-            <label htmlFor="ec-map">Ссылка на карту</label>
-            <CommitInput
-              id="ec-map"
-              value={e.mapUrl ?? ''}
-              placeholder="https://maps.app.goo.gl/…"
-              onCommit={(v) => apply({ mapUrl: v.trim() || undefined })}
-            />
-          </div>
-        </fieldset>
-
-        <ContactBlock doc={doc} entry={e} onPick={(contactId) => apply({ contactId })} />
-
-        <SourceBlock doc={doc} entry={e} onPick={(sourceId) => apply({ sourceId })} />
-
-        {!personal && (
-          <fieldset className="block">
-            <legend>Деньги</legend>
-            <div className="grid2">
+            <div className="field">
+              <label htmlFor="ec-tn">Примечание ко времени</label>
+              <CommitInput
+                id="ec-tn"
+                value={e.timeNote ?? ''}
+                placeholder="вечер, уточнить…"
+                onCommit={(v) => apply({ timeNote: v.trim() || undefined })}
+              />
+            </div>
+            {(!e.date || e.accountingMonth) && (
               <div className="field">
-                <label htmlFor="ec-amount">Сумма, €</label>
-                <CommitInput
-                  id="ec-amount"
-                  inputMode="decimal"
-                  value={e.amount === undefined ? '' : String(e.amount)}
-                  onCommit={(v) => apply({ amount: parseAmount(v) })}
+                <label htmlFor="ec-am">Засчитать в месяц</label>
+                <input
+                  id="ec-am"
+                  type="month"
+                  value={e.accountingMonth ?? ''}
+                  onChange={(ev) => apply({ accountingMonth: ev.target.value || undefined })}
                 />
               </div>
-              <div className="field">
-                <label htmlFor="ec-inv">№ инвойса</label>
-                <CommitInput
-                  id="ec-inv"
-                  value={e.invoiceNo ?? ''}
-                  onCommit={(v) => apply({ invoiceNo: v.trim() || undefined })}
-                />
-              </div>
-            </div>
-            <MoneyEditor entry={e} sources={doc.sources} onChange={(money) => apply({ money })} />
-          </fieldset>
-        )}
-
-        <Checklist items={e.checklist} onChange={(checklist) => apply({ checklist })} />
-
-        <div className="field">
-          <label htmlFor="ec-notes">Заметки</label>
-          <CommitTextarea id="ec-notes" rows={3} value={e.notes ?? ''} onCommit={(v) => apply({ notes: v || undefined })} />
+            )}
+          </div>
         </div>
 
-        {e.origin && (
-          <div className="muted small">
-            Импорт: лист «{e.origin.sheet}», строка {e.origin.row}: <code>{e.origin.raw}</code>
+        {hasMoney && (
+          <div className="field">
+            <label htmlFor="ec-amount">Сумма, €</label>
+            <CommitInput
+              id="ec-amount"
+              inputMode="decimal"
+              placeholder="0"
+              value={e.amount === undefined ? '' : String(e.amount)}
+              onCommit={(v) => apply({ amount: parseAmount(v) })}
+            />
+          </div>
+        )}
+
+        <Picker
+          kind="contact"
+          label="Контакт"
+          icon={<PersonIcon />}
+          items={contactItems}
+          value={e.contactId}
+          onChange={(contactId) => apply({ contactId })}
+          onCreate={createContact}
+          actions={contact && <ContactActions contact={contact} />}
+        />
+
+        <Picker
+          kind="source"
+          label="Источник"
+          icon={<ArrowIcon />}
+          items={sourceItems}
+          value={e.sourceId}
+          defaultSub="посредник"
+          onChange={(sourceId) => apply({ sourceId })}
+          onCreate={createSource}
+        />
+
+        <div className="field">
+          <span className="field-label" id="ec-status-label">
+            Статус
+          </span>
+          <div className="status-row" role="group" aria-labelledby="ec-status-label">
+            {STATUSES.map((s) => (
+              <button
+                type="button"
+                key={s}
+                className={'chip' + (e.status === s ? ' on' : '')}
+                aria-pressed={e.status === s}
+                onClick={() => apply({ status: s })}
+              >
+                {STATUS_LABELS[s]}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {shown.map((s) => (
+          <section className="card-section" key={s.key}>
+            <div className="card-section-head">
+              <h3>{s.title}</h3>
+              <button
+                type="button"
+                className="small card-section-remove"
+                aria-label={`Убрать раздел «${s.title}»`}
+                onClick={() => removeSection(s.key)}
+              >
+                Убрать
+              </button>
+            </div>
+            {sectionBody(s.key)}
+          </section>
+        ))}
+
+        {hidden.length > 0 && (
+          <div className="field">
+            <span className="field-label" id="ec-more-label">
+              Добавить ещё
+            </span>
+            <div className="add-chips" role="group" aria-labelledby="ec-more-label">
+              {hidden.map((s) => (
+                <button type="button" key={s.key} className="add-chip" onClick={() => openSection(s.key)}>
+                  {s.chip}
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
         {e.history && e.history.length > 0 && (
           <details className="history">
-            <summary>История ({e.history.length})</summary>
+            <summary>История изменений ({e.history.length})</summary>
             <ul>
               {[...e.history].reverse().map((h, i) => (
                 <li key={i}>
@@ -319,12 +475,55 @@ export function EntryCard({
             </ul>
           </details>
         )}
+
+        {e.origin && (
+          <details className="history">
+            <summary>Откуда импортировано</summary>
+            <div className="muted small">
+              Лист «{e.origin.sheet}», строка {e.origin.row}: <code>{e.origin.raw}</code>
+            </div>
+          </details>
+        )}
       </div>
     </Modal>
   );
 }
 
-function Checklist({ items, onChange }: { items: ChecklistItem[]; onChange: (items: ChecklistItem[]) => void }) {
+function ContactActions({ contact }: { contact: Contact }) {
+  const phone = contact.phones[0];
+  const tg = telegramLink(contact);
+  if (!phone && !tg && !contact.notes) return null;
+  return (
+    <>
+      {phone && (
+        <>
+          <a className="btn" href={'tel:' + phone.replace(/[^\d+]/g, '')}>
+            Позвонить
+          </a>
+          <a className="btn" href={'https://wa.me/' + waNumber(phone)} target="_blank" rel="noreferrer">
+            WhatsApp
+          </a>
+        </>
+      )}
+      {tg && (
+        <a className="btn" href={tg} target="_blank" rel="noreferrer">
+          Telegram
+        </a>
+      )}
+      {contact.notes && <div className="muted small picker-note">{contact.notes}</div>}
+    </>
+  );
+}
+
+function Checklist({
+  items,
+  onChange,
+  autoFocus,
+}: {
+  items: ChecklistItem[];
+  onChange: (items: ChecklistItem[]) => void;
+  autoFocus?: boolean;
+}) {
   const [text, setText] = useState('');
   const add = () => {
     if (!text.trim()) return;
@@ -332,8 +531,7 @@ function Checklist({ items, onChange }: { items: ChecklistItem[]; onChange: (ite
     setText('');
   };
   return (
-    <fieldset className="block">
-      <legend>Чек-лист</legend>
+    <div className="checklist">
       {items.map((it) => (
         <div className="check-item" key={it.id}>
           <input
@@ -345,6 +543,7 @@ function Checklist({ items, onChange }: { items: ChecklistItem[]; onChange: (ite
           <CommitInput
             className={it.done ? 'done' : ''}
             value={it.text}
+            aria-label="Текст пункта"
             onCommit={(v) => onChange(items.map((x) => (x.id === it.id ? { ...x, text: v } : x)))}
           />
           <button
@@ -361,6 +560,8 @@ function Checklist({ items, onChange }: { items: ChecklistItem[]; onChange: (ite
         <input
           value={text}
           placeholder="Новый пункт"
+          aria-label="Новый пункт"
+          autoFocus={autoFocus}
           onChange={(ev) => setText(ev.target.value)}
           onKeyDown={(ev) => ev.key === 'Enter' && add()}
         />
@@ -368,7 +569,7 @@ function Checklist({ items, onChange }: { items: ChecklistItem[]; onChange: (ite
           Добавить
         </button>
       </div>
-    </fieldset>
+    </div>
   );
 }
 
@@ -382,135 +583,4 @@ function telegramLink(c: Contact): string | undefined {
   }
   if (c.phones[0]) return 'https://t.me/+' + waNumber(c.phones[0]);
   return undefined;
-}
-
-function SourceBlock({ doc, entry, onPick }: { doc: TrackerDoc; entry: Entry; onPick: (id: string | undefined) => void }) {
-  const [creating, setCreating] = useState(false);
-  const [name, setName] = useState('');
-  const save = () => {
-    const n = name.trim();
-    if (!n) return;
-    const existing = doc.sources.find((s) => !s.deleted && s.name.trim().toLowerCase() === n.toLowerCase());
-    const src = existing ?? makeSource(n);
-    if (!existing) store.upsertSource(src);
-    onPick(src.id);
-    setCreating(false);
-    setName('');
-  };
-  return (
-    <div className="field">
-      <label htmlFor="ec-src">Источник / посредник</label>
-      <div className="row gap wrap">
-        <select id="ec-src" value={entry.sourceId ?? ''} onChange={(ev) => onPick(ev.target.value || undefined)}>
-          <option value="">— свой заказ —</option>
-          {doc.sources
-            .filter((s) => !s.deleted || s.id === entry.sourceId)
-            .map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-        </select>
-        {!creating && (
-          <button type="button" onClick={() => setCreating(true)}>
-            + Новый источник
-          </button>
-        )}
-      </div>
-      {creating && (
-        <div className="row gap wrap">
-          <input
-            placeholder="Имя источника, например Петя"
-            aria-label="Имя нового источника"
-            value={name}
-            autoFocus
-            onChange={(ev) => setName(ev.target.value)}
-            onKeyDown={(ev) => ev.key === 'Enter' && save()}
-          />
-          <button type="button" className="primary" onClick={save} disabled={!name.trim()}>
-            Добавить источник
-          </button>
-          <button type="button" onClick={() => setCreating(false)}>
-            Отмена
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ContactBlock({ doc, entry, onPick }: { doc: TrackerDoc; entry: Entry; onPick: (id: string | undefined) => void }) {
-  const [creating, setCreating] = useState(false);
-  const [name, setName] = useState('');
-  const [phone, setPhone] = useState('');
-  const c = doc.contacts.find((x) => x.id === entry.contactId);
-  const phoneVal = c?.phones[0];
-  const save = () => {
-    if (!name.trim() && !phone.trim()) return;
-    const nc = makeContact({ name: name.trim(), phones: phone.trim() ? [phone.trim()] : [] });
-    store.upsertContact(nc);
-    onPick(nc.id);
-    setCreating(false);
-    setName('');
-    setPhone('');
-  };
-  return (
-    <fieldset className="block">
-      <legend>Контакт</legend>
-      <div className="row gap wrap">
-        <select
-          aria-label="Контакт"
-          value={entry.contactId ?? ''}
-          onChange={(ev) => {
-            if (ev.target.value === '__new') setCreating(true);
-            else onPick(ev.target.value || undefined);
-          }}
-        >
-          <option value="">— нет —</option>
-          {doc.contacts
-            .filter((x) => !x.deleted || x.id === entry.contactId)
-            .map((x) => (
-              <option key={x.id} value={x.id}>
-                {x.name || x.phones[0] || 'без имени'}
-                {x.name && x.phones[0] ? ` · ${x.phones[0]}` : ''}
-              </option>
-            ))}
-          <option value="__new">+ новый контакт…</option>
-        </select>
-        {!creating && (
-          <button type="button" onClick={() => setCreating(true)}>
-            + Новый контакт
-          </button>
-        )}
-        {c && phoneVal && (
-          <>
-            <a className="btn" href={'tel:' + phoneVal.replace(/[^\d+]/g, '')}>
-              Позвонить
-            </a>
-            <a className="btn" href={'https://wa.me/' + waNumber(phoneVal)} target="_blank" rel="noreferrer">
-              WhatsApp
-            </a>
-          </>
-        )}
-        {c && telegramLink(c) && (
-          <a className="btn" href={telegramLink(c)} target="_blank" rel="noreferrer">
-            Telegram
-          </a>
-        )}
-      </div>
-      {creating && (
-        <div className="row gap wrap">
-          <input placeholder="Имя" value={name} onChange={(ev) => setName(ev.target.value)} />
-          <input placeholder="Телефон" inputMode="tel" value={phone} onChange={(ev) => setPhone(ev.target.value)} />
-          <button type="button" className="primary" onClick={save}>
-            Сохранить
-          </button>
-          <button type="button" onClick={() => setCreating(false)}>
-            Отмена
-          </button>
-        </div>
-      )}
-      {c?.notes && <div className="muted small">{c.notes}</div>}
-    </fieldset>
-  );
 }

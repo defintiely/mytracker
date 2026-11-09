@@ -89,12 +89,14 @@ export function Modal({
   children,
   footer,
   wide,
+  className,
 }: {
   title: ReactNode;
   onClose: () => void;
   children: ReactNode;
   footer?: ReactNode;
   wide?: boolean;
+  className?: string;
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -105,7 +107,7 @@ export function Modal({
   }, [onClose]);
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className={'modal' + (wide ? ' modal-wide' : '')} role="dialog" aria-modal="true">
+      <div className={'modal' + (wide ? ' modal-wide' : '') + (className ? ' ' + className : '')} role="dialog" aria-modal="true">
         <div className="modal-head">
           <div className="modal-title">{title}</div>
           <button type="button" className="icon-btn" onClick={onClose} aria-label="Закрыть">
