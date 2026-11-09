@@ -864,7 +864,7 @@ button.chip {
   color: color-mix(in srgb, var(--text) 70%, transparent);
 }
 /*
- * Выходные (сб/вс одной недели) — толстая полоса перед первым рядом блока и после последнего, по ходу чтения.
+ * Выходные (сб/вс одной недели) — полоса чуть толще обычной границы строк, перед первым рядом блока и после последнего.
  * Не цвет: цвет в таблице означает тип задачи. Полоса рисуется псевдоэлементом поверх строки — высота строки,
  * которую меряет виртуализатор, не меняется, а фон кнопки строки на телефоне её не перекрывает.
  */
@@ -874,8 +874,8 @@ button.chip {
   position: absolute;
   left: 0;
   right: 0;
-  height: 3px;
-  background: var(--text);
+  height: 2px;
+  background: var(--muted);
   pointer-events: none;
   z-index: 2;
 }
@@ -1072,8 +1072,7 @@ button.chip {
   gap: 1px;
   min-height: 28px;
   padding: 1px 0;
-  /* рамка 2px есть всегда (прозрачная) — у дня с задачами она лишь окрашивается, клетка не прыгает */
-  border: 2px solid transparent;
+  border: 0;
   border-radius: 6px;
   background: transparent;
   /* цифры бледнее основного текста; --muted к фону карточки — не ниже 4.5:1 в обеих темах */
@@ -1085,30 +1084,28 @@ button.chip {
 .yday:hover {
   background: var(--surface-2);
 }
-/* день с задачами — сильная обводка цветом текста; цифра остаётся бледной, выделение — рамкой */
-.yday.has-entries {
-  border-color: var(--text);
-}
+/* день с задачами выделяют сами кружочки типов (ниже), без рамки дня */
 /* сегодня — залитый кружок акцента с контрастной цифрой (не путать с обводкой дня с задачами) */
 .yday.is-today {
   background: var(--accent);
-  border-color: var(--accent);
   color: var(--accent-text);
   font-weight: 700;
-}
-.yday.is-today.has-entries {
-  border-color: var(--text);
 }
 .yday-dots {
   display: flex;
   gap: 2px;
-  height: 5px;
+  height: 8px;
 }
+/* кружочки задач: крупнее и с заметной тёмной обводкой — светлые цвета типов (жёлтый) видны на любом фоне */
 .yday-dots i {
-  width: 5px;
-  height: 5px;
+  width: 8px;
+  height: 8px;
+  box-sizing: border-box;
   border-radius: 50%;
-  box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--text) 35%, transparent);
+  border: 1.5px solid var(--text);
+}
+.yday.is-today .yday-dots i {
+  border-color: var(--accent-text);
 }
 .ycard-sum {
   margin: 0;
