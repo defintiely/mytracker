@@ -366,6 +366,66 @@ function useScrollToToday(virtualizer: { scrollToIndex: (i: number, o?: { align?
   }, [items, virtualizer]);
 }
 
+/** Для каждой строки — индекс заголовка её месяца (-1, если над строкой заголовка нет). */
+export function monthHeaderIndex(items: Item[]): number[] {
+  const out: number[] = new Array(items.length);
+  let cur = -1;
+  items.forEach((it, i) => {
+    if (it.k === 'month') cur = i;
+    out[i] = cur;
+  });
+  return out;
+}
+
+interface VirtualRow {
+  index: number;
+  start: number;
+  end: number;
+}
+
+/**
+ * Закреплённый заголовок месяца: месяц верхней видимой строки, если его заголовок уже уехал вверх.
+ * shift < 0 — следующий заголовок подъезжает снизу и выталкивает закреплённый.
+ */
+export function pinnedMonth(
+  items: Item[],
+  headerOf: number[],
+  rows: VirtualRow[],
+  scrollTop: number,
+  pinHeight: number,
+): { index: number; shift: number } | null {
+  const top = rows.find((r) => r.end > scrollTop);
+  if (!top) return null;
+  const hi = headerOf[top.index];
+  if (hi < 0) return null;
+  const headerRow = rows.find((r) => r.index === hi);
+  if (headerRow && headerRow.start >= scrollTop) return null; // свой заголовок ещё виден
+  const next = rows.find((r) => r.index > top.index && items[r.index].k === 'month' && r.start > scrollTop);
+  const gap = next ? next.start - scrollTop : Infinity;
+  return { index: hi, shift: gap < pinHeight ? gap - pinHeight : 0 };
+}
+
+function MonthPin({ items, headerOf, rows, scrollTop, className, height }: {
+  items: Item[];
+  headerOf: number[];
+  rows: VirtualRow[];
+  scrollTop: number;
+  className: string;
+  height: number;
+}) {
+  const pin = pinnedMonth(items, headerOf, rows, scrollTop, height);
+  const it = pin ? items[pin.index] : undefined;
+  return (
+    <div className="month-pin-anchor" aria-hidden={!it}>
+      {it && it.k === 'month' && (
+        <div className={className + ' month-pin'} style={{ transform: `translateY(${pin!.shift}px)` }}>
+          {it.label} <span className="muted small">· {it.count}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function itemKey(it: Item): string {
   return it.k === 'row' ? it.entry.id : it.k + ':' + it.key;
 }
@@ -714,6 +774,20 @@ function Grid({
     initialRect: { width: 1200, height: 800 },
   });
   useScrollToToday(virtualizer, items);
+  const headerOf = useMemo(() => monthHeaderIndex(items), [items]);
+  // высота шапки столбцов — под ней прилипает заголовок месяца
+  const headRef = useRef<HTMLDivElement>(null);
+  const [headH, setHeadH] = useState(37);
+  useEffect(() => {
+    const el = headRef.current;
+    if (!el) return;
+    const update = () => el.offsetHeight > 0 && setHeadH(el.offsetHeight);
+    update();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   const rowIndexById = useMemo(() => {
     const m = new Map<string, number>();
@@ -749,8 +823,11 @@ function Grid({
 
   return (
     <div className="grid-scroll" ref={scrollRef}>
-      <div className={'grid-inner' + (resizing ? ' is-resizing' : '')} style={{ ['--cols' as string]: template, minWidth }}>
-        <div className="grid-head grid-row" role="row">
+      <div
+        className={'grid-inner' + (resizing ? ' is-resizing' : '')}
+        style={{ ['--cols' as string]: template, ['--head-h' as string]: headH + 'px', minWidth }}
+      >
+        <div className="grid-head grid-row" role="row" ref={headRef}>
           {cols.map((c) => {
             const movable = c.id !== FIXED_COL;
             return (
@@ -841,6 +918,14 @@ function Grid({
             );
           })}
         </div>
+        <MonthPin
+          items={items}
+          headerOf={headerOf}
+          rows={virtualizer.getVirtualItems()}
+          scrollTop={virtualizer.scrollOffset ?? 0}
+          className="grid-month"
+          height={38}
+        />
         <div className="grid-body" style={{ height: virtualizer.getTotalSize() }}>
           {virtualizer.getVirtualItems().map((vi) => {
             const it = items[vi.index];
@@ -1235,8 +1320,17 @@ function MobileList({ items, doc }: { items: Item[]; doc: TrackerDoc }) {
     initialRect: { width: 390, height: 700 },
   });
   useScrollToToday(virtualizer, items);
+  const headerOf = useMemo(() => monthHeaderIndex(items), [items]);
   return (
     <div className="mlist-scroll" ref={scrollRef}>
+      <MonthPin
+        items={items}
+        headerOf={headerOf}
+        rows={virtualizer.getVirtualItems()}
+        scrollTop={virtualizer.scrollOffset ?? 0}
+        className="mlist-month"
+        height={40}
+      />
       <div className="mlist-body" style={{ height: virtualizer.getTotalSize() }}>
         {virtualizer.getVirtualItems().map((vi) => {
           const it = items[vi.index];

@@ -6,7 +6,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { store } from '../store/store';
 import { emptyDoc, newEntry } from '../model/entry';
 import { App } from '../App';
-import { TableView, buildItems, todayIndex } from './TableView';
+import { TableView, buildItems, monthHeaderIndex, pinnedMonth, todayIndex } from './TableView';
 import { SHOW_EMPTY_DAYS_KEY, setShowEmptyDays } from './tablePrefs';
 
 // jsdom не считает раскладку: без размеров окна прокрутки виртуализатор не рисует ни одной строки.
@@ -287,5 +287,42 @@ describe('перемотка к сегодняшнему дню', () => {
   it('с пустыми днями — строка пустого сегодняшнего дня', () => {
     const items = buildItems([mk('2030-05-03')], emptyDoc(), { currentMonth: '2030-05' });
     expect(items[todayIndex(items, '2030-05-07')]).toMatchObject({ k: 'empty', key: '2030-05-07' });
+  });
+});
+
+describe('закреплённый заголовок месяца', () => {
+  // месяц: заголовок 40px, строки по 30px
+  const doc = emptyDoc();
+  const items = buildItems(
+    [newEntry({ title: 'a', date: '2030-05-03' }), newEntry({ title: 'b', date: '2030-05-20' }), newEntry({ title: 'c', date: '2030-04-10' })],
+    doc,
+  );
+  let y = 0;
+  const rows = items.map((it, index) => {
+    const h = it.k === 'month' ? 40 : 30;
+    const r = { index, start: y, end: y + h };
+    y += h;
+    return r;
+  });
+  const headerOf = monthHeaderIndex(items);
+  const aprilHeader = items.findIndex((it) => it.k === 'month' && it.key === '2030-04');
+
+  it('пока заголовок месяца виден — ничего не закреплено', () => {
+    expect(pinnedMonth(items, headerOf, rows, 0, 40)).toBeNull();
+  });
+  it('заголовок уехал вверх, а дни месяца видны — он закреплён', () => {
+    const pin = pinnedMonth(items, headerOf, rows, 45, 40);
+    expect(items[pin!.index]).toMatchObject({ k: 'month', key: '2030-05' });
+    expect(pin!.shift).toBe(0);
+  });
+  it('следующий заголовок подъезжает — выталкивает закреплённый', () => {
+    const next = rows[aprilHeader].start;
+    const pin = pinnedMonth(items, headerOf, rows, next - 10, 40);
+    expect(items[pin!.index]).toMatchObject({ key: '2030-05' });
+    expect(pin!.shift).toBe(-30);
+  });
+  it('дальше закреплён уже следующий месяц', () => {
+    const pin = pinnedMonth(items, headerOf, rows, rows[aprilHeader].start + 5, 40);
+    expect(items[pin!.index]).toMatchObject({ key: '2030-04' });
   });
 });
