@@ -1,5 +1,5 @@
 // Экран «Таблица» (SPEC §6.1): группировка по месяцам, итоги, редактирование по месту, фильтры, виртуализация.
-import { useMemo, useRef, useState, type KeyboardEvent as RKeyboardEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as RKeyboardEvent } from 'react';
 import {
   columnOrderingFeature,
   columnSizingFeature,
@@ -301,12 +301,8 @@ export function buildItems(entries: Entry[], doc: TrackerDoc, emptyDays?: EmptyD
   const monthSet = new Set([...groups.keys()].filter((k) => k !== NO_MONTH));
   if (emptyDays) {
     const { currentMonth, from, to } = emptyDays;
+    // Месяцы без единой записи не показываем; исключение — текущий месяц (к нему перематывается таблица).
     if ((!from || currentMonth >= from) && (!to || currentMonth <= to)) monthSet.add(currentMonth);
-    if (monthSet.size) {
-      const sorted = [...monthSet].sort();
-      const last = sorted[sorted.length - 1];
-      for (let m = sorted[0]; m < last; m = nextMonth(m)) monthSet.add(m);
-    }
   }
   const keys = [...monthSet].sort((a, b) => b.localeCompare(a));
   if (groups.has(NO_MONTH)) keys.push(NO_MONTH);
@@ -336,6 +332,38 @@ export function buildItems(entries: Entry[], doc: TrackerDoc, emptyDays?: EmptyD
     if (k !== NO_MONTH && list.length) items.push({ k: 'total', key: k, t: monthTotals(list, k, doc.settings) });
   }
   return items;
+}
+
+/** Строка «сегодня» для перемотки: запись или пустой день на сегодня, иначе ближайшая дальше в этом месяце,
+ * иначе заголовок текущего месяца, иначе ближайший прошедший месяц. -1 — ничего подходящего. */
+export function todayIndex(items: Item[], today: ISODate): number {
+  const month = today.slice(0, 7);
+  const dateOf = (it: Item): ISODate | undefined => (it.k === 'row' ? it.entry.date : it.k === 'empty' ? it.key : undefined);
+  const exact = items.findIndex((it) => dateOf(it) === today);
+  if (exact >= 0) return exact;
+  const later = items.findIndex((it) => {
+    const d = dateOf(it);
+    return !!d && d.slice(0, 7) === month && d > today;
+  });
+  if (later >= 0) return later;
+  const header = items.findIndex((it) => it.k === 'month' && it.key === month);
+  if (header >= 0) return header;
+  return items.findIndex((it) => it.k === 'month' && it.key !== NO_MONTH && it.key < month);
+}
+
+/** При открытии таблицы — один раз перемотать к сегодняшнему дню. */
+function useScrollToToday(virtualizer: { scrollToIndex: (i: number, o?: { align?: 'start' | 'center' | 'end' | 'auto' }) => void }, items: Item[]) {
+  const done = useRef(false);
+  useEffect(() => {
+    if (done.current || !items.length) return;
+    done.current = true;
+    const idx = todayIndex(items, todayISO());
+    if (idx < 0) return;
+    // заголовок месяца над строкой — тоже в кадре
+    const target = idx > 0 && items[idx].k !== 'month' ? idx - 1 : idx;
+    const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (f: () => void) => setTimeout(f, 0);
+    raf(() => virtualizer.scrollToIndex(target, { align: 'start' }));
+  }, [items, virtualizer]);
 }
 
 function itemKey(it: Item): string {
@@ -685,6 +713,7 @@ function Grid({
     overscan: 10,
     initialRect: { width: 1200, height: 800 },
   });
+  useScrollToToday(virtualizer, items);
 
   const rowIndexById = useMemo(() => {
     const m = new Map<string, number>();
@@ -1205,6 +1234,7 @@ function MobileList({ items, doc }: { items: Item[]; doc: TrackerDoc }) {
     overscan: 8,
     initialRect: { width: 390, height: 700 },
   });
+  useScrollToToday(virtualizer, items);
   return (
     <div className="mlist-scroll" ref={scrollRef}>
       <div className="mlist-body" style={{ height: virtualizer.getTotalSize() }}>

@@ -6,7 +6,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { store } from '../store/store';
 import { emptyDoc, newEntry } from '../model/entry';
 import { App } from '../App';
-import { TableView, buildItems } from './TableView';
+import { TableView, buildItems, todayIndex } from './TableView';
 import { SHOW_EMPTY_DAYS_KEY, setShowEmptyDays } from './tablePrefs';
 
 // jsdom не считает раскладку: без размеров окна прокрутки виртуализатор не рисует ни одной строки.
@@ -138,10 +138,13 @@ describe('Таблица: пустые дни', () => {
 
   it('строки пустых дней виртуализуются: за годы истории в DOM лишь видимая часть', () => {
     localStorage.removeItem('wlt.table.filters');
-    seed(
-      newEntry({ title: 'Давно', date: '2020-01-15', status: 'done', amount: 100 }),
-      newEntry({ title: 'Свадьба', date: '2030-05-10', status: 'booked', amount: 100 }),
-    );
+    // по записи в каждом месяце 10 лет — пустых дней тысячи
+    const many = Array.from({ length: 120 }, (_, i) => {
+      const y = 2020 + Math.floor(i / 12);
+      const m = String((i % 12) + 1).padStart(2, '0');
+      return newEntry({ title: 'Запись ' + i, date: `${y}-${m}-15`, status: 'done', amount: 100 });
+    });
+    seed(...many);
     act(() => setShowEmptyDays(true));
     render(<TableView />);
     const all = buildItems(store.getDoc().entries, store.getDoc(), { currentMonth: '2026-11' });
@@ -156,7 +159,7 @@ describe('Таблица: пустые дни', () => {
     expect(document.querySelector('.cell-input')).toBeNull();
   });
 
-  it('buildItems: месяцы без «дыр», текущий месяц, предел периода; «Без даты» — без пустых дней', () => {
+  it('buildItems: месяцы без записей не показываются (кроме текущего), предел периода; «Без даты» — без пустых дней', () => {
     const doc = emptyDoc();
     const a = newEntry({ title: 'A', date: '2030-03-05' });
     const b = newEntry({ title: 'B', date: '2030-05-10', dateEnd: '2030-05-12' });
@@ -164,7 +167,7 @@ describe('Таблица: пустые дни', () => {
     const months = (items: ReturnType<typeof buildItems>) => items.filter((x) => x.k === 'month').map((x) => x.key);
 
     const all = buildItems([a, b, c], doc, { currentMonth: '2030-08' });
-    expect(months(all)).toEqual(['2030-08', '2030-07', '2030-06', '2030-05', '2030-04', '2030-03', '__none']);
+    expect(months(all)).toEqual(['2030-08', '2030-05', '2030-03', '__none']);
     // итоги — только у месяцев с записями
     expect(all.filter((x) => x.k === 'total').map((x) => x.key)).toEqual(['2030-05', '2030-03']);
     // многодневная запись занимает все свои дни
@@ -176,15 +179,10 @@ describe('Таблица: пустые дни', () => {
     expect(all.slice(noneAt + 1).map((x) => x.k)).toEqual(['row']);
 
     // текущий месяц за пределом периода не добавляется, внутри — добавляется
-    expect(months(buildItems([a, b], doc, { currentMonth: '2030-08', to: '2030-07' }))).toEqual([
-      '2030-05',
-      '2030-04',
-      '2030-03',
-    ]);
+    expect(months(buildItems([a, b], doc, { currentMonth: '2030-08', to: '2030-07' }))).toEqual(['2030-05', '2030-03']);
     expect(months(buildItems([a, b], doc, { currentMonth: '2030-06', from: '2030-04', to: '2030-07' }))).toEqual([
       '2030-06',
       '2030-05',
-      '2030-04',
       '2030-03',
     ]);
     // без записей — только текущий месяц
@@ -268,5 +266,26 @@ describe('Телефон: компактный список', () => {
     expect(screen.getByRole('button', { name: 'Добавить ещё на 10.05.2030' })).toBeTruthy();
     // строка записи по-прежнему открывает карточку отдельной кнопкой
     expect(screen.getByText('Свадьба').closest('button.mlist-row')).toBeTruthy();
+  });
+});
+
+describe('перемотка к сегодняшнему дню', () => {
+  const mk = (date: string) => newEntry({ title: date, date });
+  it('todayIndex: запись на сегодня → её строка; иначе ближайшая дальше в месяце; иначе заголовок месяца', () => {
+    const doc = emptyDoc();
+    const items = buildItems([mk('2030-05-03'), mk('2030-05-20'), mk('2030-04-10')], doc);
+    const at = (i: number) => items[i];
+    const i1 = todayIndex(items, '2030-05-20');
+    expect(at(i1).k === 'row' && (at(i1) as { entry: { date?: string } }).entry.date).toBe('2030-05-20');
+    const i2 = todayIndex(items, '2030-05-10'); // сегодня записи нет → следующая в месяце
+    expect((at(i2) as { entry: { date?: string } }).entry.date).toBe('2030-05-20');
+    const i3 = todayIndex(items, '2030-05-25'); // после всех записей месяца → заголовок месяца
+    expect(at(i3)).toMatchObject({ k: 'month', key: '2030-05' });
+    const i4 = todayIndex(items, '2030-06-02'); // месяца нет → ближайший прошедший
+    expect(at(i4)).toMatchObject({ k: 'month', key: '2030-05' });
+  });
+  it('с пустыми днями — строка пустого сегодняшнего дня', () => {
+    const items = buildItems([mk('2030-05-03')], emptyDoc(), { currentMonth: '2030-05' });
+    expect(items[todayIndex(items, '2030-05-07')]).toMatchObject({ k: 'empty', key: '2030-05-07' });
   });
 });
