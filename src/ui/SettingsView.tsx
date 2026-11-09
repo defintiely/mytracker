@@ -93,6 +93,72 @@ export function SettingsView() {
   );
 }
 
+/** Пошаговая инструкция: как получить OAuth Client ID в Google Cloud. Раскрыта, пока ID не задан. */
+function GoogleSetupGuide({ open }: { open: boolean }) {
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(origin);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* буфер недоступен — адрес виден и так */
+    }
+  };
+  const link = (href: string, text: string) => (
+    <a href={href} target="_blank" rel="noreferrer">
+      {text}
+    </a>
+  );
+  return (
+    <details className="setup-guide" open={open}>
+      <summary>Как подключить Google — пошагово (≈10 минут, один раз)</summary>
+      <ol>
+        <li>
+          Откройте {link('https://console.cloud.google.com/projectcreate', 'Google Cloud Console')} под своим Google-аккаунтом и
+          создайте проект с любым именем, например «Трекер». Платить ничего не нужно.
+        </li>
+        <li>
+          Включите в этом проекте два API — кнопка «Enable» на каждой странице:{' '}
+          {link('https://console.cloud.google.com/apis/library/drive.googleapis.com', 'Google Drive API')} и{' '}
+          {link('https://console.cloud.google.com/apis/library/calendar-json.googleapis.com', 'Google Calendar API')}.
+        </li>
+        <li>
+          Откройте {link('https://console.cloud.google.com/auth/overview', 'Google Auth Platform')} → «Get started»: имя
+          приложения (любое), ваш email, тип аудитории <b>External</b>. Затем в разделе{' '}
+          {link('https://console.cloud.google.com/auth/audience', 'Audience')} оставьте статус <b>Testing</b> и в «Test users»
+          добавьте свой Gmail.
+        </li>
+        <li>
+          В разделе {link('https://console.cloud.google.com/auth/clients', 'Clients')} нажмите «Create client»: тип{' '}
+          <b>Web application</b>, в «Authorized JavaScript origins» добавьте адрес этого сайта:
+          <div className="row gap wrap setup-origin">
+            <code>{origin}</code>
+            <button type="button" className="small" onClick={copy}>
+              {copied ? 'Скопировано' : 'Копировать'}
+            </button>
+          </div>
+          «Authorized redirect URIs» оставьте пустым. Нажмите «Create».
+        </li>
+        <li>
+          Скопируйте <b>Client ID</b> (оканчивается на <code>.apps.googleusercontent.com</code>), вставьте в поле ниже, нажмите
+          «Сохранить», затем «Войти».
+        </li>
+        <li>
+          Google покажет «Google hasn’t verified this app» — это нормально для личного приложения: «Advanced» →
+          «Go to … (unsafe)». На экране доступа отметьте <b>все</b> галочки (Drive и Календарь).
+        </li>
+      </ol>
+      <div className="hint">
+        Client ID хранится на этом устройстве — на телефоне вставьте его ещё раз. Чтобы не вводить на каждом устройстве, его
+        можно один раз записать в переменную репозитория <code>VITE_GOOGLE_CLIENT_ID</code> (GitHub → Settings → Secrets and
+        variables → Actions → Variables) — он попадёт в следующую сборку. Client ID не секретный.
+      </div>
+    </details>
+  );
+}
+
 function GoogleSection() {
   const sync = useSyncState();
   const [clientId, setClientId] = useState(() => getClientId() ?? '');
@@ -134,6 +200,7 @@ function GoogleSection() {
       <div className="hint">
         Данные синхронизируются через ваш Google Drive (скрытая папка приложения). Своего сервера нет.
       </div>
+      <GoogleSetupGuide open={!configured} />
       <div className="field">
         <label htmlFor="st-cid">OAuth Client ID</label>
         <div className="row gap">

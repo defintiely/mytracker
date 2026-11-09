@@ -1584,3 +1584,30 @@ details > summary {
     display: none;
   }
 }
+
+/* Инструкция подключения Google в настройках */
+.setup-guide {
+  margin: 8px 0 14px;
+  padding: 10px 14px;
+  border: 1px solid var(--border, #ccc);
+  border-radius: 10px;
+}
+.setup-guide > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.setup-guide ol {
+  margin: 10px 0;
+  padding-left: 22px;
+  line-height: 1.5;
+}
+.setup-guide li + li {
+  margin-top: 8px;
+}
+.setup-origin {
+  margin: 6px 0;
+  align-items: center;
+}
+.setup-origin code {
+  word-break: break-all;
+}
