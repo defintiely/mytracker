@@ -36,7 +36,7 @@ import {
   type NavMode,
   type NavSide,
 } from './tablePrefs';
-import { DATE_FORMATS, formatDateTime, formatDay, useDateFormat, type DateFormat } from './dates';
+import { DATE_FORMATS, formatDateTime, formatDay, useDateFormat, useShowWeekday, type DateFormat } from './dates';
 
 export function SettingsView() {
   const doc = useTracker();
@@ -136,6 +136,7 @@ function AppearanceSection() {
   const [side, setSide] = useNavSide();
   const [mode, setMode] = useNavMode();
   const [fmt, setFmt] = useDateFormat();
+  const [showWd, setShowWd] = useShowWeekday();
   const today = todayISO();
   return (
     <section className="settings-block">
@@ -170,11 +171,15 @@ function AppearanceSection() {
             id: f.id,
             label: (
               <>
-                {f.label} <span className="muted">— {formatDay(today, { format: f.id })}</span>
+                {f.label} <span className="muted">— {formatDay(today, { format: f.id, weekday: true, showWeekday: showWd })}</span>
               </>
             ),
           }))}
         />
+        <label className="check">
+          <input type="checkbox" checked={showWd} onChange={(e) => setShowWd(e.target.checked)} /> Показывать день недели
+          перед датой («пт 05.12»)
+        </label>
       </div>
       <div className="hint">
         Панель разделов — на компьютере и планшете; на телефоне разделы всегда внизу экрана. «По кнопке» — панель

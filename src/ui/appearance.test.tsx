@@ -9,7 +9,7 @@ import { App } from '../App';
 import { TableView } from './TableView';
 import { SettingsView } from './SettingsView';
 import { NAV_MODE_KEY, NAV_SIDE_KEY, setNavMode, setNavSide } from './tablePrefs';
-import { DATE_FORMAT_KEY, formatDay, formatDayRange, formatDateTime, setDateFormat, type DateFormat } from './dates';
+import { DATE_FORMAT_KEY, WEEKDAY_KEY, formatDay, formatDayRange, formatDateTime, setDateFormat, setShowWeekday, type DateFormat } from './dates';
 
 const sizeProps = ['clientWidth', 'clientHeight', 'offsetHeight'] as const;
 const savedDescriptors = sizeProps.map((p) => Object.getOwnPropertyDescriptor(HTMLElement.prototype, p));
@@ -41,6 +41,7 @@ beforeEach(() => {
     setNavSide('left');
     setNavMode('pinned');
     setDateFormat('dd.mm');
+    setShowWeekday(true);
   });
   const doc = emptyDoc();
   doc.entries = [newEntry({ title: 'Свадьба', date: '2030-05-10', status: 'booked', amount: 100 })];
@@ -208,9 +209,11 @@ describe('Настройки → Внешний вид', () => {
     const t = new Date();
     const dd = String(t.getDate()).padStart(2, '0');
     const mm = String(t.getMonth() + 1).padStart(2, '0');
-    expect(within(block).getByRole('radio', { name: `ДД.ММ — ${dd}.${mm}` })).toBeTruthy();
-    expect(within(block).getByRole('radio', { name: `ДД ММ — ${dd} ${mm}` })).toBeTruthy();
-    expect(within(block).getByRole('radio', { name: `ГГГГ-ММ-ДД — ${t.getFullYear()}-${mm}-${dd}` })).toBeTruthy();
+    // превью показывает и день недели, пока он включён
+    const wd = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'][t.getDay()];
+    expect(within(block).getByRole('radio', { name: `ДД.ММ — ${wd} ${dd}.${mm}` })).toBeTruthy();
+    expect(within(block).getByRole('radio', { name: `ДД ММ — ${wd} ${dd} ${mm}` })).toBeTruthy();
+    expect(within(block).getByRole('radio', { name: `ГГГГ-ММ-ДД — ${wd} ${t.getFullYear()}-${mm}-${dd}` })).toBeTruthy();
     expect((within(block).getByRole('radio', { name: /^ДД\.ММ —/ }) as HTMLInputElement).checked).toBe(true);
   });
 
@@ -235,5 +238,26 @@ describe('Настройки → Внешний вид', () => {
     fireEvent.click(within(block).getByRole('radio', { name: /^ДД ММ —/ }));
     expect(dateCell()).toContain('пт 10 05');
     expect(screen.getByRole('button', { name: 'Добавить ещё на 10 05 30' })).toBeTruthy();
+  });
+});
+
+describe('День недели', () => {
+  it('выключенный в настройках — не показывается, даже где он предусмотрен', () => {
+    expect(formatDay(cur('12-05'), { weekday: true, showWeekday: true })).toMatch(/^(пн|вт|ср|чт|пт|сб|вс) 05\.12$/);
+    expect(formatDay(cur('12-05'), { weekday: true, showWeekday: false })).toBe('05.12');
+    act(() => setShowWeekday(false));
+    expect(formatDay(cur('12-05'), { weekday: true })).toBe('05.12');
+  });
+
+  it('галка в «Настройках» пишет в localStorage и сразу убирает день недели в таблице', () => {
+    render(<SettingsView />);
+    const box = screen.getByLabelText(/Показывать день недели/);
+    expect((box as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(box);
+    expect(localStorage.getItem(WEEKDAY_KEY)).toBe('false');
+    cleanup();
+    render(<TableView />);
+    expect(screen.queryByText(/^(пн|вт|ср|чт|пт|сб|вс) 10\.05/)).toBeNull();
+    expect(screen.getAllByText(/10\.05/).length).toBeGreaterThan(0);
   });
 });

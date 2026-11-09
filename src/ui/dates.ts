@@ -36,8 +36,22 @@ const dateFormat = devicePref<DateFormat>(DATE_FORMAT_KEY, DEFAULT_DATE_FORMAT, 
 
 export const getDateFormat = dateFormat.get;
 export const setDateFormat = dateFormat.set;
-/** Подписка на формат: компонент, который выводит даты, перерисуется сразу при смене настройки. */
-export const useDateFormat = dateFormat.use;
+
+/** Показывать ли день недели перед датой («пт 05.12») там, где он предусмотрен. По умолчанию — да. */
+export const WEEKDAY_KEY = 'wlt.date.weekday';
+const weekdayPref = devicePref<boolean>(WEEKDAY_KEY, true, (v) => (typeof v === 'boolean' ? v : undefined));
+export const getShowWeekday = weekdayPref.get;
+export const setShowWeekday = weekdayPref.set;
+export const useShowWeekday = weekdayPref.use;
+
+/**
+ * Подписка на настройки дат (формат и день недели): компонент, который выводит даты,
+ * перерисуется сразу при смене любой из них.
+ */
+export function useDateFormat(): ReturnType<typeof dateFormat.use> {
+  weekdayPref.use();
+  return dateFormat.use();
+}
 
 export const MONTHS_SHORT = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
 export const MONTHS_GENITIVE = [
@@ -53,8 +67,10 @@ export interface DayOpts {
    * Форматы с годом (ДД.ММ.ГГ, ГГГГ-ММ-ДД) показывают год всегда.
    */
   year?: 'auto' | 'never';
-  /** Короткий день недели впереди: «пт 05.12». */
+  /** Короткий день недели впереди: «пт 05.12» — если не выключен в настройках (см. showWeekday). */
   weekday?: boolean;
+  /** Настройка «день недели» вместо сохранённой на устройстве (превью в «Настройках», тесты). */
+  showWeekday?: boolean;
   /** Формат вместо настройки на устройстве (превью в «Настройках», тесты). */
   format?: DateFormat;
 }
@@ -92,7 +108,7 @@ export function formatDay(iso: ISODate | undefined, opts: DayOpts = {}): string 
     default:
       out = `${dd}.${mm}` + (addYear ? `.${yy}` : '');
   }
-  if (opts.weekday) out = WEEKDAYS_SHORT[parseISODate(iso).getDay()] + ' ' + out;
+  if (opts.weekday && (opts.showWeekday ?? getShowWeekday())) out = WEEKDAYS_SHORT[parseISODate(iso).getDay()] + ' ' + out;
   return out;
 }
 
