@@ -27,6 +27,7 @@ import { useSyncState } from './SyncIndicator';
 import { ImportWizard } from './ImportWizard';
 import { ExportPanel } from './ExportPanel';
 import { errorText, makeContact, makeSource, norm } from './util';
+import { useShowEmptyDays } from './tablePrefs';
 
 export function SettingsView() {
   const doc = useTracker();
@@ -76,6 +77,7 @@ export function SettingsView() {
           </div>
         </div>
       </section>
+      <TableSection />
       <TaskTypesSection s={s} entries={doc.entries} />
       <Categories s={s} />
       <SourcesSection sources={doc.sources} />
@@ -89,6 +91,25 @@ export function SettingsView() {
         <ExportPanel />
       </section>
     </div>
+  );
+}
+
+/** Настройки экрана «Таблица» — хранятся на этом устройстве, не синхронизируются. */
+function TableSection() {
+  const [showEmpty, setShowEmpty] = useShowEmptyDays();
+  return (
+    <section className="settings-block">
+      <h2>Таблица</h2>
+      <label className="check">
+        <input type="checkbox" checked={showEmpty} onChange={(e) => setShowEmpty(e.target.checked)} /> Показывать пустые
+        дни в таблице
+      </label>
+      <div className="hint">
+        В каждом месяце таблицы появятся строки для дней без записей — с кнопкой «+», чтобы сразу добавить дело на этот
+        день. Пока включён поиск или фильтр по типу, источнику или оплате, пустые дни скрыты. Настройка действует только на
+        этом устройстве; то же переключает флажок «Пустые дни» над таблицей.
+      </div>
+    </section>
   );
 }
 

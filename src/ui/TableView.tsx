@@ -12,7 +12,7 @@ import {
   type ColumnVisibilityState,
 } from '@tanstack/react-table';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import type { Entry, EntryKind, EntryStatus, EntryType, Settings, TrackerDoc } from '../model/types';
+import type { Entry, EntryKind, EntryStatus, EntryType, ISODate, Settings, TrackerDoc, YearMonth } from '../model/types';
 import { KIND_LABELS, STATUS_LABELS } from '../model/types';
 import {
   entryMonth,
@@ -32,18 +32,24 @@ import { PayIcon, StatusBadge, parseAmount, useIsMobile, useUi } from './common'
 import { methodFromLabel } from './MoneyEditor';
 import {
   PAY_ICONS,
+  addDays,
   contactName,
+  formatDate,
   formatDateRange,
   formatTime,
   lsGet,
   lsSet,
   methodLabel,
   moneySummary,
+  pad2,
+  parseISODate,
   parseTimeInput,
   sourceName,
+  todayISO,
   uniqueSorted,
   withHistory,
 } from './util';
+import { useShowEmptyDays } from './tablePrefs';
 
 // ---------- колонки ----------
 
@@ -231,14 +237,60 @@ function sortInMonth(a: Entry, b: Entry): number {
   return a.createdAt.localeCompare(b.createdAt);
 }
 
-type Item =
+/** Фильтры, при которых день «пуст» лишь потому, что его записи отфильтрованы: пустые дни тогда не показываем. */
+export function narrowsEntries(f: Filters): boolean {
+  return Boolean(f.q.trim() || f.types.length || f.pay || f.source);
+}
+
+export type Item =
   | { k: 'month'; key: string; label: string; count: number }
   | { k: 'row'; entry: Entry }
+  | { k: 'empty'; key: ISODate; weekend: boolean }
   | { k: 'total'; key: string; t: MonthTotals };
 
 const NO_MONTH = '__none';
 
-function buildItems(entries: Entry[], doc: TrackerDoc): Item[] {
+export interface EmptyDaysOpts {
+  /** Месяц «сейчас» — показывается всегда, если попадает в период. */
+  currentMonth: YearMonth;
+  from?: YearMonth;
+  to?: YearMonth;
+}
+
+function nextMonth(m: YearMonth): YearMonth {
+  const [y, mm] = m.split('-').map(Number);
+  return mm === 12 ? `${y + 1}-01` : `${y}-${pad2(mm + 1)}`;
+}
+
+function monthDays(m: YearMonth): ISODate[] {
+  const [y, mm] = m.split('-').map(Number);
+  const n = new Date(y, mm, 0).getDate();
+  return Array.from({ length: n }, (_, i) => `${m}-${pad2(i + 1)}`);
+}
+
+/** Дни, занятые хоть одной записью (многодневная запись занимает все свои дни; длина — не больше года). */
+function coveredDays(entries: Entry[]): Set<ISODate> {
+  const out = new Set<ISODate>();
+  for (const e of entries) {
+    if (!e.date) continue;
+    out.add(e.date);
+    if (e.dateEnd && e.dateEnd > e.date) {
+      let d = e.date;
+      for (let i = 0; i < 366 && d < e.dateEnd; i++) {
+        d = addDays(d, 1);
+        out.add(d);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Строки таблицы: месяц → записи → итоги. С emptyDays внутри каждого месяца (кроме «Без даты») ещё и
+ * строки дней без записей — по возрастанию даты, как и записи месяца. Месяцы тогда: те, где есть записи,
+ * плюс текущий, плюс все между самым ранним и самым поздним (без «дыр»), в пределах периода фильтра.
+ */
+export function buildItems(entries: Entry[], doc: TrackerDoc, emptyDays?: EmptyDaysOpts): Item[] {
   const groups = new Map<string, Entry[]>();
   for (const e of entries) {
     const m = entryMonth(e) ?? NO_MONTH;
@@ -246,16 +298,48 @@ function buildItems(entries: Entry[], doc: TrackerDoc): Item[] {
     if (g) g.push(e);
     else groups.set(m, [e]);
   }
-  const keys = [...groups.keys()].filter((k) => k !== NO_MONTH).sort((a, b) => b.localeCompare(a));
+  const monthSet = new Set([...groups.keys()].filter((k) => k !== NO_MONTH));
+  if (emptyDays) {
+    const { currentMonth, from, to } = emptyDays;
+    if ((!from || currentMonth >= from) && (!to || currentMonth <= to)) monthSet.add(currentMonth);
+    if (monthSet.size) {
+      const sorted = [...monthSet].sort();
+      const last = sorted[sorted.length - 1];
+      for (let m = sorted[0]; m < last; m = nextMonth(m)) monthSet.add(m);
+    }
+  }
+  const keys = [...monthSet].sort((a, b) => b.localeCompare(a));
   if (groups.has(NO_MONTH)) keys.push(NO_MONTH);
+  const covered = emptyDays ? coveredDays(entries) : undefined;
   const items: Item[] = [];
   for (const k of keys) {
-    const list = groups.get(k)!.sort(sortInMonth);
+    const list = (groups.get(k) ?? []).sort(sortInMonth);
     items.push({ k: 'month', key: k, label: k === NO_MONTH ? 'Без даты' : monthLabel(k), count: list.length });
-    for (const e of list) items.push({ k: 'row', entry: e });
-    if (k !== NO_MONTH) items.push({ k: 'total', key: k, t: monthTotals(list, k, doc.settings) });
+    if (covered && k !== NO_MONTH) {
+      const days = monthDays(k).filter((d) => !covered.has(d));
+      let di = 0;
+      /** Выложить пустые дни раньше until (без until — все оставшиеся). */
+      const flush = (until?: ISODate) => {
+        for (; di < days.length && (until === undefined || days[di] < until); di++) {
+          const wd = parseISODate(days[di]).getDay();
+          items.push({ k: 'empty', key: days[di], weekend: wd === 0 || wd === 6 });
+        }
+      };
+      for (const e of list) {
+        flush(e.date);
+        items.push({ k: 'row', entry: e });
+      }
+      flush();
+    } else {
+      for (const e of list) items.push({ k: 'row', entry: e });
+    }
+    if (k !== NO_MONTH && list.length) items.push({ k: 'total', key: k, t: monthTotals(list, k, doc.settings) });
   }
   return items;
+}
+
+function itemKey(it: Item): string {
+  return it.k === 'row' ? it.entry.id : it.k + ':' + it.key;
 }
 
 // ---------- экран ----------
@@ -302,7 +386,19 @@ export function TableView() {
       updateLayout((prev) => ({ ...prev, sizing: cleanSizing(typeof u === 'function' ? u(prev.sizing) : u) })),
   });
 
-  const items = useMemo(() => buildItems(table.getRowModel().rows.map((r) => r.original), doc), [table, filtered, doc]);
+  const [showEmpty, setShowEmpty] = useShowEmptyDays();
+  const emptyHidden = showEmpty && narrowsEntries(filters);
+  const emptyOn = showEmpty && !emptyHidden;
+  const currentMonth = todayISO().slice(0, 7);
+  const items = useMemo(
+    () =>
+      buildItems(
+        table.getRowModel().rows.map((r) => r.original),
+        doc,
+        emptyOn ? { currentMonth, from: filters.from || undefined, to: filters.to || undefined } : undefined,
+      ),
+    [table, filtered, doc, emptyOn, currentMonth, filters.from, filters.to],
+  );
   const visibleCols = table.getVisibleLeafColumns().map((c) => COL_BY_ID[c.id as ColId]);
 
   const resizeCol = (id: ColId, w: number) => table.setColumnSizing((prev) => ({ ...prev, [id]: clampWidth(w) }));
@@ -335,7 +431,15 @@ export function TableView() {
 
   return (
     <div className="view table-view">
-      <FilterBar doc={doc} filters={filters} onChange={setFilters} count={filtered.length} />
+      <FilterBar
+        doc={doc}
+        filters={filters}
+        onChange={setFilters}
+        count={filtered.length}
+        showEmpty={showEmpty}
+        onShowEmpty={setShowEmpty}
+        emptyHidden={emptyHidden}
+      />
       {!mobile && (
         <details className="col-menu">
           <summary>Колонки</summary>
@@ -406,11 +510,17 @@ function FilterBar({
   filters: f,
   onChange,
   count,
+  showEmpty,
+  onShowEmpty,
+  emptyHidden,
 }: {
   doc: TrackerDoc;
   filters: Filters;
   onChange: (f: Filters) => void;
   count: number;
+  showEmpty: boolean;
+  onShowEmpty: (on: boolean) => void;
+  emptyHidden: boolean;
 }) {
   const set = (p: Partial<Filters>) => onChange({ ...f, ...p });
   const active =
@@ -488,7 +598,11 @@ function FilterBar({
           )}
         </div>
       </details>
+      <label className="check small empty-days-toggle" title="Показывать в таблице дни без записей">
+        <input type="checkbox" checked={showEmpty} onChange={(e) => onShowEmpty(e.target.checked)} /> Пустые дни
+      </label>
       <span className="muted small">{count} зап.</span>
+      {emptyHidden && <span className="hint filters-hint">Пустые дни скрыты, пока включён фильтр</span>}
     </div>
   );
 }
@@ -563,11 +677,11 @@ function Grid({
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: (i) => (items[i].k === 'row' ? 34 : items[i].k === 'month' ? 38 : 52),
-    getItemKey: (i) => {
-      const it = items[i];
-      return it.k === 'row' ? it.entry.id : it.k + ':' + it.key;
+    estimateSize: (i) => {
+      const k = items[i].k;
+      return k === 'row' ? 34 : k === 'empty' ? 26 : k === 'month' ? 38 : 52;
     },
+    getItemKey: (i) => itemKey(items[i]),
     overscan: 10,
     initialRect: { width: 1200, height: 800 },
   });
@@ -714,6 +828,28 @@ function Grid({
                   <TotalsLine t={it.t} settings={doc.settings} />
                 </div>
               );
+            if (it.k === 'empty')
+              return (
+                <div
+                  key={vi.key}
+                  className={'grid-row empty-row' + (it.weekend ? ' weekend' : '')}
+                  style={style}
+                  data-index={vi.index}
+                  ref={virtualizer.measureElement}
+                  role="row"
+                >
+                  {cols.map((c) => (
+                    <div key={c.id} className={'gc gc-' + c.id} role="gridcell" data-col={c.id}>
+                      {c.id === 'date' && (
+                        <>
+                          <span className="empty-date">{formatDate(it.key, true)}</span>
+                          <AddDayButton date={it.key} empty />
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              );
             const e = it.entry;
             return (
               <div
@@ -745,19 +881,22 @@ function Grid({
                         onDone={(dx, dy) => (dx || dy ? move(editing, dx, dy) : setEditing(null))}
                       />
                     ) : (
-                      <div
-                        className="cell-view"
-                        tabIndex={0}
-                        onClick={() => canEdit(e, c.id, doc) && setEditing({ id: e.id, col: c.id })}
-                        onKeyDown={(ev) => {
-                          if ((ev.key === 'Enter' || ev.key === 'F2') && canEdit(e, c.id, doc)) {
-                            ev.preventDefault();
-                            setEditing({ id: e.id, col: c.id });
-                          }
-                        }}
-                      >
-                        {cellText(e, c.id, doc)}
-                      </div>
+                      <>
+                        <div
+                          className="cell-view"
+                          tabIndex={0}
+                          onClick={() => canEdit(e, c.id, doc) && setEditing({ id: e.id, col: c.id })}
+                          onKeyDown={(ev) => {
+                            if ((ev.key === 'Enter' || ev.key === 'F2') && canEdit(e, c.id, doc)) {
+                              ev.preventDefault();
+                              setEditing({ id: e.id, col: c.id });
+                            }
+                          }}
+                        >
+                          {cellText(e, c.id, doc)}
+                        </div>
+                        {c.id === 'date' && e.date && <AddDayButton date={e.date} />}
+                      </>
                     )}
                   </div>
                 ))}
@@ -767,6 +906,26 @@ function Grid({
         </div>
       </div>
     </div>
+  );
+}
+
+/** «+» — карточка новой записи на эту дату (тот же путь, что тап по дню в календаре: черновик до «Создать»). */
+function AddDayButton({ date, empty, className }: { date: ISODate; empty?: boolean; className?: string }) {
+  const ui = useUi();
+  const label = (empty ? 'Добавить на ' : 'Добавить ещё на ') + formatDate(date);
+  return (
+    <button
+      type="button"
+      className={'day-add' + (empty ? ' day-add-empty' : '') + (className ? ' ' + className : '')}
+      aria-label={label}
+      title={label}
+      onClick={(ev) => {
+        ev.stopPropagation();
+        ui.createEntry({ date });
+      }}
+    >
+      +
+    </button>
   );
 }
 
@@ -1038,11 +1197,11 @@ function MobileList({ items, doc }: { items: Item[]; doc: TrackerDoc }) {
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: (i) => (items[i].k === 'row' ? 60 : items[i].k === 'month' ? 40 : 70),
-    getItemKey: (i) => {
-      const it = items[i];
-      return it.k === 'row' ? it.entry.id : it.k + ':' + it.key;
+    estimateSize: (i) => {
+      const k = items[i].k;
+      return k === 'row' ? 60 : k === 'empty' ? 40 : k === 'month' ? 40 : 70;
     },
+    getItemKey: (i) => itemKey(items[i]),
     overscan: 8,
     initialRect: { width: 390, height: 700 },
   });
@@ -1064,35 +1223,49 @@ function MobileList({ items, doc }: { items: Item[]; doc: TrackerDoc }) {
                 <TotalsLine t={it.t} settings={doc.settings} />
               </div>
             );
+          if (it.k === 'empty')
+            return (
+              <div
+                key={vi.key}
+                className={'mlist-empty' + (it.weekend ? ' weekend' : '')}
+                style={style}
+                data-index={vi.index}
+                ref={virtualizer.measureElement}
+              >
+                <span className="empty-date">{formatDate(it.key, true)}</span>
+                <AddDayButton date={it.key} empty />
+              </div>
+            );
           const e = it.entry;
           return (
-            <button
-              type="button"
+            <div
               key={vi.key}
-              className="mlist-row"
+              className="mlist-entry"
               style={{ ...style, ['--tc' as string]: typeColor(doc.settings, e.type) }}
               data-index={vi.index}
               ref={virtualizer.measureElement}
-              onClick={() => ui.openEntry(e.id)}
             >
-              <span className={'mr-date' + (e.dateTentative ? ' tentative' : '')}>
-                {formatDateRange(e) || '—'}
-                <small>{formatTime(e)}</small>
-              </span>
-              <span className="mr-main">
-                <span className="mr-title">{e.title || 'без названия'}</span>
-                <span className="mr-sub muted">
-                  {[e.location, e.category, sourceName(doc, e.sourceId)].filter(Boolean).join(' · ')}
+              <button type="button" className="mlist-row" onClick={() => ui.openEntry(e.id)}>
+                <span className={'mr-date' + (e.dateTentative ? ' tentative' : '')}>
+                  {formatDateRange(e) || '—'}
+                  <small>{formatTime(e)}</small>
                 </span>
-              </span>
-              <span className="mr-right">
-                {typeHasMoney(doc.settings, e.type) && e.amount !== undefined && <b>{formatEUR(e.amount)}</b>}
-                <span className="row gap-s">
-                  <PayIcon entry={e} settings={doc.settings} />
-                  <StatusBadge status={e.status} compact />
+                <span className="mr-main">
+                  <span className="mr-title">{e.title || 'без названия'}</span>
+                  <span className="mr-sub muted">
+                    {[e.location, e.category, sourceName(doc, e.sourceId)].filter(Boolean).join(' · ')}
+                  </span>
                 </span>
-              </span>
-            </button>
+                <span className="mr-right">
+                  {typeHasMoney(doc.settings, e.type) && e.amount !== undefined && <b>{formatEUR(e.amount)}</b>}
+                  <span className="row gap-s">
+                    <PayIcon entry={e} settings={doc.settings} />
+                    <StatusBadge status={e.status} compact />
+                  </span>
+                </span>
+              </button>
+              {e.date && <AddDayButton date={e.date} className="mlist-add" />}
+            </div>
           );
         })}
       </div>

@@ -795,6 +795,119 @@ button.chip {
   align-items: flex-end;
   gap: 2px;
 }
+/* запись на телефоне: строка-кнопка + «+» на ту же дату справа */
+.mlist-entry {
+  display: flex;
+  align-items: stretch;
+  background: color-mix(in srgb, var(--tc) 22%, var(--surface));
+  border-bottom: 1px solid var(--border);
+}
+.mlist-entry > .mlist-row {
+  border-bottom: 0;
+}
+.mlist-entry > .mlist-row {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---------- пустые дни и «+» на дату ---------- */
+
+.day-add {
+  flex: none;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  margin-right: 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.day-add:hover,
+.day-add:focus-visible {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+/* у записи «+» виден при наведении на строку или фокусе в ней; на сенсорных экранах — всегда */
+.entry-row .day-add {
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.entry-row:hover .day-add,
+.entry-row:focus-within .day-add {
+  opacity: 1;
+}
+@media (hover: none) {
+  .entry-row .day-add {
+    opacity: 1;
+  }
+}
+.empty-row {
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+  font-size: 12px;
+}
+.empty-row .gc {
+  min-height: 26px;
+}
+.empty-row .gc-date {
+  justify-content: space-between;
+  gap: 4px;
+}
+.empty-date {
+  padding: 0 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: color-mix(in srgb, var(--text) 70%, transparent);
+}
+.weekend .empty-date {
+  color: var(--muted);
+  font-style: italic;
+}
+.empty-row.weekend,
+.mlist-empty.weekend {
+  background: color-mix(in srgb, var(--surface-2) 70%, transparent);
+}
+.day-add-empty {
+  min-width: 22px;
+  min-height: 20px;
+  opacity: 0.6;
+}
+.empty-row:hover .day-add-empty,
+.day-add-empty:focus-visible {
+  opacity: 1;
+}
+.mlist-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 40px;
+  padding: 2px 8px 2px 18px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  font-size: 13px;
+}
+.mlist-empty .day-add-empty,
+.mlist-add {
+  opacity: 1;
+  min-width: 40px;
+  min-height: 36px;
+  font-size: 18px;
+}
+.mlist-add {
+  align-self: center;
+  margin: 0 8px;
+}
+.empty-days-toggle {
+  min-height: var(--touch);
+  white-space: nowrap;
+}
+.filters-hint {
+  align-self: center;
+  margin: 0;
+}
 
 /* ---------- модалка и карточка ---------- */
 
