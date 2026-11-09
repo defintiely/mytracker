@@ -1,10 +1,14 @@
 // Экран «Таблица» (SPEC §6.1): группировка по месяцам, итоги, редактирование по месту, фильтры, виртуализация.
 import { useMemo, useRef, useState, type KeyboardEvent as RKeyboardEvent } from 'react';
 import {
+  columnOrderingFeature,
+  columnSizingFeature,
   columnVisibilityFeature,
   createColumnHelper,
   tableFeatures,
   useTable,
+  type ColumnOrderState,
+  type ColumnSizingState,
   type ColumnVisibilityState,
 } from '@tanstack/react-table';
 import { useVirtualizer } from '@tanstack/react-virtual';
@@ -87,12 +91,80 @@ const COLS: ColMeta[] = [
 ];
 const COL_BY_ID = Object.fromEntries(COLS.map((c) => [c.id, c])) as Record<ColId, ColMeta>;
 
-const features = tableFeatures({ columnVisibilityFeature });
+const features = tableFeatures({ columnVisibilityFeature, columnOrderingFeature, columnSizingFeature });
 const helper = createColumnHelper<typeof features, Entry>();
 const columns = COLS.map((c) => helper.display({ id: c.id, header: c.label, enableHiding: c.hideable }));
 
 const COLS_KEY = 'wlt.table.columns';
 const FILTERS_KEY = 'wlt.table.filters';
+/** Ширины и порядок колонок на этом устройстве. Версия в ключе — на случай смены формата. */
+export const LAYOUT_KEY = 'wlt.table.layout.v1';
+
+// ---------- ширина и порядок колонок ----------
+
+/** Колонка с кнопкой «Открыть карточку» всегда первая: её не двигают и не растягивают. */
+const FIXED_COL: ColId = 'open';
+export const COL_MIN = 60;
+export const COL_MAX = 800;
+/** Предел для «подогнать по содержимому» — длинные заметки не растягивают колонку на весь экран. */
+const AUTOFIT_MAX = 500;
+const MIN_GRID_WIDTH = 1300;
+
+interface Layout {
+  order: ColumnOrderState;
+  sizing: ColumnSizingState;
+}
+
+const DEFAULT_ORDER: ColId[] = COLS.map((c) => c.id);
+const DEFAULT_LAYOUT: Layout = { order: DEFAULT_ORDER, sizing: {} };
+
+const clampWidth = (w: number, max = COL_MAX) => Math.round(Math.min(max, Math.max(COL_MIN, w)));
+
+/** Ширина колонки по умолчанию в пикселях — первое число из CSS-описания ('96px', 'minmax(180px, 2fr)'). */
+function defaultPx(id: ColId): number {
+  const m = /(\d+)px/.exec(COL_BY_ID[id].width);
+  return m ? Number(m[1]) : 100;
+}
+
+/** Сливает сохранённый порядок с текущим набором колонок: неизвестные отбрасывает, новые — в конец. */
+export function mergeOrder(saved: unknown): ColId[] {
+  const known = new Set<string>(DEFAULT_ORDER);
+  const seen = new Set<string>([FIXED_COL]);
+  const out: ColId[] = [FIXED_COL];
+  if (Array.isArray(saved)) {
+    for (const id of saved) {
+      if (typeof id === 'string' && known.has(id) && !seen.has(id)) {
+        seen.add(id);
+        out.push(id as ColId);
+      }
+    }
+  }
+  for (const id of DEFAULT_ORDER) if (!seen.has(id)) out.push(id);
+  return out;
+}
+
+function cleanSizing(saved: unknown): ColumnSizingState {
+  const out: ColumnSizingState = {};
+  if (!saved || typeof saved !== 'object') return out;
+  for (const [id, w] of Object.entries(saved as Record<string, unknown>)) {
+    if (id in COL_BY_ID && id !== FIXED_COL && typeof w === 'number' && Number.isFinite(w)) out[id] = clampWidth(w);
+  }
+  return out;
+}
+
+function loadLayout(): Layout {
+  const raw = lsGet<Partial<Layout> | null>(LAYOUT_KEY, null);
+  if (!raw || typeof raw !== 'object') return DEFAULT_LAYOUT;
+  return { order: mergeOrder(raw.order), sizing: cleanSizing(raw.sizing) };
+}
+
+function clearLayout() {
+  try {
+    localStorage.removeItem(LAYOUT_KEY);
+  } catch {
+    /* хранилище недоступно — не критично */
+  }
+}
 
 // ---------- фильтры ----------
 
@@ -201,6 +273,13 @@ export function TableView() {
     lsSet(FILTERS_KEY, { ...f, q: '' });
   };
   const [colVis, setColVis] = useState<ColumnVisibilityState>(() => lsGet(COLS_KEY, { notes: false, invoiceNo: false }));
+  const [layout, setLayoutState] = useState<Layout>(loadLayout);
+  const updateLayout = (fn: (prev: Layout) => Layout) =>
+    setLayoutState((prev) => {
+      const next = fn(prev);
+      lsSet(LAYOUT_KEY, next);
+      return next;
+    });
 
   const filtered = useMemo(() => applyFilters(doc, filters), [doc, filters]);
 
@@ -209,7 +288,7 @@ export function TableView() {
     columns,
     data: filtered,
     getRowId: (e: Entry) => e.id,
-    state: { columnVisibility: colVis },
+    state: { columnVisibility: colVis, columnOrder: layout.order, columnSizing: layout.sizing },
     onColumnVisibilityChange: (u) => {
       setColVis((prev) => {
         const next = typeof u === 'function' ? u(prev) : u;
@@ -217,10 +296,42 @@ export function TableView() {
         return next;
       });
     },
+    onColumnOrderChange: (u) =>
+      updateLayout((prev) => ({ ...prev, order: mergeOrder(typeof u === 'function' ? u(prev.order) : u) })),
+    onColumnSizingChange: (u) =>
+      updateLayout((prev) => ({ ...prev, sizing: cleanSizing(typeof u === 'function' ? u(prev.sizing) : u) })),
   });
 
   const items = useMemo(() => buildItems(table.getRowModel().rows.map((r) => r.original), doc), [table, filtered, doc]);
   const visibleCols = table.getVisibleLeafColumns().map((c) => COL_BY_ID[c.id as ColId]);
+
+  const resizeCol = (id: ColId, w: number) => table.setColumnSizing((prev) => ({ ...prev, [id]: clampWidth(w) }));
+  /** Переставляет колонку относительно другой (перетаскивание заголовка). */
+  const dropCol = (dragId: ColId, targetId: ColId, side: 'before' | 'after') => {
+    if (dragId === targetId || dragId === FIXED_COL || targetId === FIXED_COL) return;
+    table.setColumnOrder((prev) => {
+      const arr = prev.filter((x) => x !== dragId);
+      const i = arr.indexOf(targetId);
+      if (i < 0) return prev;
+      arr.splice(side === 'after' ? i + 1 : i, 0, dragId);
+      return arr;
+    });
+  };
+  /** Сдвигает колонку на одну позицию в общем порядке (кнопки ↑/↓ в меню). */
+  const shiftCol = (id: ColId, dir: -1 | 1) =>
+    table.setColumnOrder((prev) => {
+      const arr = [...prev];
+      const i = arr.indexOf(id);
+      const j = i + dir;
+      if (i < 0 || j < 0 || j >= arr.length || arr[j] === FIXED_COL) return prev;
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+      return arr;
+    });
+  const resetLayout = () => {
+    setLayoutState(DEFAULT_LAYOUT);
+    clearLayout();
+  };
+  const menuIds = layout.order.filter((id) => id !== FIXED_COL) as ColId[];
 
   return (
     <div className="view table-view">
@@ -229,15 +340,46 @@ export function TableView() {
         <details className="col-menu">
           <summary>Колонки</summary>
           <div className="col-menu-list">
-            {table
-              .getAllLeafColumns()
-              .filter((c) => COL_BY_ID[c.id as ColId].hideable)
-              .map((c) => (
-                <label key={c.id} className="check">
-                  <input type="checkbox" checked={c.getIsVisible()} onChange={() => c.toggleVisibility()} />{' '}
-                  {COL_BY_ID[c.id as ColId].label}
-                </label>
-              ))}
+            {menuIds.map((id, i) => {
+              const col = table.getColumn(id);
+              const meta = COL_BY_ID[id];
+              return (
+                <div key={id} className="col-menu-item">
+                  <label className="check">
+                    <input
+                      type="checkbox"
+                      checked={col?.getIsVisible() ?? true}
+                      disabled={!meta.hideable}
+                      onChange={() => col?.toggleVisibility()}
+                    />{' '}
+                    {meta.label}
+                  </label>
+                  <span className="col-menu-move">
+                    <button
+                      type="button"
+                      className="icon-btn small"
+                      aria-label={`Выше: ${meta.label}`}
+                      disabled={i === 0}
+                      onClick={() => shiftCol(id, -1)}
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn small"
+                      aria-label={`Ниже: ${meta.label}`}
+                      disabled={i === menuIds.length - 1}
+                      onClick={() => shiftCol(id, 1)}
+                    >
+                      ↓
+                    </button>
+                  </span>
+                </div>
+              );
+            })}
+            <button type="button" className="small col-menu-reset" onClick={resetLayout}>
+              Сбросить ширину и порядок
+            </button>
           </div>
         </details>
       )}
@@ -246,7 +388,14 @@ export function TableView() {
       ) : mobile ? (
         <MobileList items={items} doc={doc} />
       ) : (
-        <Grid items={items} cols={visibleCols} doc={doc} />
+        <Grid
+          items={items}
+          cols={visibleCols}
+          doc={doc}
+          sizing={layout.sizing}
+          onResize={resizeCol}
+          onDropCol={dropCol}
+        />
       )}
     </div>
   );
@@ -351,11 +500,66 @@ interface EditPos {
   col: ColId;
 }
 
-function Grid({ items, cols, doc }: { items: Item[]; cols: ColMeta[]; doc: TrackerDoc }) {
+type DropSide = 'before' | 'after';
+
+function Grid({
+  items,
+  cols,
+  doc,
+  sizing,
+  onResize,
+  onDropCol,
+}: {
+  items: Item[];
+  cols: ColMeta[];
+  doc: TrackerDoc;
+  sizing: ColumnSizingState;
+  onResize: (id: ColId, w: number) => void;
+  onDropCol: (dragId: ColId, targetId: ColId, side: DropSide) => void;
+}) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [editing, setEditing] = useState<EditPos | null>(null);
   const ui = useUi();
-  const template = cols.map((c) => c.width).join(' ');
+  const template = cols.map((c) => (sizing[c.id] ? `${sizing[c.id]}px` : c.width)).join(' ');
+  const minWidth = Math.max(
+    MIN_GRID_WIDTH,
+    cols.reduce((s, c) => s + (sizing[c.id] ?? defaultPx(c.id)), 0),
+  );
+
+  // --- ширина: ручка у правого края заголовка ---
+  const resizeRef = useRef<{ id: ColId; startX: number; startW: number } | null>(null);
+  const [resizing, setResizing] = useState<ColId | null>(null);
+  const widthOf = (id: ColId, head: HTMLElement | null): number =>
+    sizing[id] ?? (head?.getBoundingClientRect().width || defaultPx(id));
+
+  /** Подогнать по содержимому: ширина самого длинного видимого значения или заголовка. */
+  const autoFit = (id: ColId) => {
+    const root = scrollRef.current;
+    if (!root) return;
+    let max = 0;
+    root.querySelectorAll<HTMLElement>(`[data-col="${id}"]`).forEach((cell) => {
+      const content = (cell.classList.contains('gh') ? cell.querySelector('.gh-label') : cell.firstElementChild) as
+        | HTMLElement
+        | null;
+      if (!content) return;
+      const { width, whiteSpace } = content.style;
+      content.style.width = 'max-content';
+      content.style.whiteSpace = 'nowrap';
+      max = Math.max(max, content.getBoundingClientRect().width);
+      content.style.width = width;
+      content.style.whiteSpace = whiteSpace;
+    });
+    // + поля заголовка и место под ручку
+    if (max > 0) onResize(id, clampWidth(Math.ceil(max) + 18, AUTOFIT_MAX));
+  };
+
+  // --- порядок: перетаскивание заголовка ---
+  const [dragCol, setDragCol] = useState<ColId | null>(null);
+  const [drop, setDrop] = useState<{ id: ColId; side: DropSide } | null>(null);
+  const endDrag = () => {
+    setDragCol(null);
+    setDrop(null);
+  };
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scrollRef.current,
@@ -402,13 +606,97 @@ function Grid({ items, cols, doc }: { items: Item[]; cols: ColMeta[]; doc: Track
 
   return (
     <div className="grid-scroll" ref={scrollRef}>
-      <div className="grid-inner" style={{ ['--cols' as string]: template }}>
+      <div className={'grid-inner' + (resizing ? ' is-resizing' : '')} style={{ ['--cols' as string]: template, minWidth }}>
         <div className="grid-head grid-row" role="row">
-          {cols.map((c) => (
-            <div key={c.id} className="gh" role="columnheader">
-              {c.label}
-            </div>
-          ))}
+          {cols.map((c) => {
+            const movable = c.id !== FIXED_COL;
+            return (
+              <div
+                key={c.id}
+                className={
+                  'gh' +
+                  (movable ? ' gh-movable' : '') +
+                  (dragCol === c.id ? ' dragging' : '') +
+                  (drop && drop.id === c.id && dragCol !== c.id ? ' drop-' + drop.side : '')
+                }
+                role="columnheader"
+                data-col={c.id}
+                draggable={movable}
+                onDragStart={(ev) => {
+                  if (!movable || resizeRef.current || (ev.target as HTMLElement).closest('.col-resizer')) {
+                    ev.preventDefault();
+                    return;
+                  }
+                  ev.dataTransfer.effectAllowed = 'move';
+                  ev.dataTransfer.setData('text/plain', c.id);
+                  setDragCol(c.id);
+                }}
+                onDragOver={(ev) => {
+                  if (!dragCol || !movable) return;
+                  ev.preventDefault();
+                  ev.dataTransfer.dropEffect = 'move';
+                  const r = ev.currentTarget.getBoundingClientRect();
+                  const side: DropSide = ev.clientX < r.left + r.width / 2 ? 'before' : 'after';
+                  if (!drop || drop.id !== c.id || drop.side !== side) setDrop({ id: c.id, side });
+                }}
+                onDrop={(ev) => {
+                  ev.preventDefault();
+                  if (dragCol && drop) onDropCol(dragCol, drop.id, drop.side);
+                  endDrag();
+                }}
+                onDragEnd={endDrag}
+              >
+                <span className="gh-label">{c.label}</span>
+                {movable && (
+                  <div
+                    className={'col-resizer' + (resizing === c.id ? ' active' : '')}
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label={`Ширина: ${c.label}`}
+                    aria-valuemin={COL_MIN}
+                    aria-valuemax={COL_MAX}
+                    aria-valuenow={sizing[c.id] ?? defaultPx(c.id)}
+                    tabIndex={0}
+                    draggable={false}
+                    onPointerDown={(ev) => {
+                      if (ev.button !== 0) return;
+                      ev.preventDefault();
+                      ev.stopPropagation();
+                      resizeRef.current = {
+                        id: c.id,
+                        startX: ev.clientX,
+                        startW: widthOf(c.id, ev.currentTarget.parentElement),
+                      };
+                      ev.currentTarget.setPointerCapture?.(ev.pointerId);
+                      setResizing(c.id);
+                    }}
+                    onPointerMove={(ev) => {
+                      const d = resizeRef.current;
+                      if (!d) return;
+                      const w = clampWidth(d.startW + ev.clientX - d.startX);
+                      if (w !== sizing[d.id]) onResize(d.id, w);
+                    }}
+                    onPointerUp={(ev) => {
+                      resizeRef.current = null;
+                      ev.currentTarget.releasePointerCapture?.(ev.pointerId);
+                      setResizing(null);
+                    }}
+                    onPointerCancel={() => {
+                      resizeRef.current = null;
+                      setResizing(null);
+                    }}
+                    onDoubleClick={() => autoFit(c.id)}
+                    onKeyDown={(ev) => {
+                      if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') return;
+                      ev.preventDefault();
+                      const step = (ev.shiftKey ? 50 : 10) * (ev.key === 'ArrowLeft' ? -1 : 1);
+                      onResize(c.id, widthOf(c.id, ev.currentTarget.parentElement) + step);
+                    }}
+                  />
+                )}
+              </div>
+            );
+          })}
         </div>
         <div className="grid-body" style={{ height: virtualizer.getTotalSize() }}>
           {virtualizer.getVirtualItems().map((vi) => {
@@ -437,7 +725,7 @@ function Grid({ items, cols, doc }: { items: Item[]; cols: ColMeta[]; doc: Track
                 role="row"
               >
                 {cols.map((c) => (
-                  <div key={c.id} className={'gc gc-' + c.id} role="gridcell">
+                  <div key={c.id} className={'gc gc-' + c.id} role="gridcell" data-col={c.id}>
                     {c.id === 'open' ? (
                       <button type="button" className="icon-btn" aria-label="Открыть карточку" onClick={() => ui.openEntry(e.id)}>
                         ↗

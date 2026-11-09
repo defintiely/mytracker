@@ -536,6 +536,23 @@ button.chip {
   border-radius: var(--radius);
   box-shadow: 0 6px 24px rgb(0 0 0 / 0.15);
 }
+.col-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  white-space: nowrap;
+}
+.col-menu-move {
+  display: inline-flex;
+}
+.col-menu-move .icon-btn {
+  min-width: 28px;
+  padding: 0 4px;
+}
+.col-menu-reset {
+  margin-top: 6px;
+}
 
 .grid-scroll {
   flex: 1;
@@ -546,7 +563,7 @@ button.chip {
   background: var(--surface);
 }
 .grid-inner {
-  min-width: 1300px;
+  min-width: 1300px; /* точная минимальная ширина — инлайном из суммы ширин колонок */
   position: relative;
 }
 .grid-row {
@@ -565,10 +582,64 @@ button.chip {
   color: var(--muted);
 }
 .gh {
-  padding: 6px 6px;
+  position: relative;
+  padding: 6px 10px 6px 6px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  user-select: none;
+}
+.gh-movable {
+  cursor: grab;
+}
+.gh.dragging {
+  opacity: 0.45;
+}
+/* линия вставки при перетаскивании колонки */
+.gh.drop-before {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.gh.drop-after {
+  box-shadow: inset -3px 0 0 var(--accent);
+}
+/* ручка ширины у правого края заголовка */
+.col-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 1;
+}
+.col-resizer::after {
+  content: '';
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  right: 2px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.gh:hover .col-resizer::after {
+  opacity: 0.45;
+}
+.col-resizer:hover::after,
+.col-resizer:focus-visible::after,
+.col-resizer.active::after {
+  opacity: 1;
+}
+.col-resizer:focus-visible {
+  outline: none;
+}
+.grid-inner.is-resizing,
+.grid-inner.is-resizing * {
+  cursor: col-resize;
+  user-select: none;
 }
 .grid-body {
   position: relative;
