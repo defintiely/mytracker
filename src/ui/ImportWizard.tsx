@@ -444,7 +444,6 @@ function Review(props: {
               <th>Тип</th>
               <th>Дата</th>
               <th>Название</th>
-              <th>Вид</th>
               <th>Сумма</th>
               <th>Источник</th>
               <th>Статус</th>
@@ -494,7 +493,6 @@ function Review(props: {
                   <td>
                     <CommitInput aria-label="Название" value={e.title} onCommit={(v) => props.patchRow(i, { title: v })} />
                   </td>
-                  <td className="small">{KIND_LABELS[e.kind]}</td>
                   <td>
                     {!typeHasMoney(settings, e.type) ? (
                       ''

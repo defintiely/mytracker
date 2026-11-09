@@ -44,6 +44,24 @@ describe('TrackerStore', () => {
     expect(s.isDirty()).toBe(true);
   });
 
+  it('вид записи ставится сам: по дате, сумме и типу', async () => {
+    const s = new TrackerStore();
+    await s.load();
+    const e = newEntry({ title: 'x', amount: 300 });
+    s.upsertEntry(e);
+    const kind = () => s.getDoc().entries.find((x) => x.id === e.id)!.kind;
+    expect(kind()).toBe('work'); // без даты, с суммой
+    s.updateEntry(e.id, { date: '2030-01-10' });
+    expect(kind()).toBe('job'); // появилась дата
+    s.updateEntry(e.id, { type: 'personal' });
+    expect(kind()).toBe('event'); // тип без денег
+    s.updateEntry(e.id, { date: undefined, amount: undefined });
+    expect(kind()).toBe('note');
+    const p = newEntry({ kind: 'payment', amount: 100 });
+    s.upsertEntry(p);
+    expect(s.getDoc().entries.find((x) => x.id === p.id)!.kind).toBe('payment'); // оплаты не трогаем
+  });
+
   it('удаление — tombstone, запись остаётся с deleted', async () => {
     const s = new TrackerStore();
     await s.load();

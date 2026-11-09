@@ -127,7 +127,6 @@ export function applyFilters(doc: TrackerDoc, f: Filters): Entry[] {
     if (f.from && (!m || m < f.from)) return false;
     if (f.to && (!m || m > f.to)) return false;
     if (f.types.length && !f.types.includes(e.type)) return false;
-    if (f.kind && e.kind !== f.kind) return false;
     if (f.pay && payState(e, doc.settings) !== f.pay) return false;
     if (f.source === '__none' && e.sourceId) return false;
     if (f.source && f.source !== '__none' && e.sourceId !== f.source) return false;
@@ -300,17 +299,6 @@ function FilterBar({
               </label>
             ))}
           </div>
-          <label>
-            Вид
-            <select value={f.kind} onChange={(e) => set({ kind: e.target.value as EntryKind | '' })}>
-              <option value="">все</option>
-              {(Object.keys(KIND_LABELS) as EntryKind[]).map((k) => (
-                <option key={k} value={k}>
-                  {KIND_LABELS[k]}
-                </option>
-              ))}
-            </select>
-          </label>
           <label>
             Оплата
             <select value={f.pay} onChange={(e) => set({ pay: e.target.value as PayState | '' })}>

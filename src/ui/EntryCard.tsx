@@ -8,7 +8,7 @@ import { store } from '../store/store';
 import { useTracker } from '../store/useTracker';
 import { CommitInput, CommitTextarea, Modal, PayIcon, StatusBadge, parseAmount, useIsMobile } from './common';
 import { MoneyEditor } from './MoneyEditor';
-import { digits, makeContact, mapLink, uniqueSorted, waNumber, withHistory } from './util';
+import { digits, makeContact, makeSource, mapLink, uniqueSorted, waNumber, withHistory } from './util';
 
 const STATUSES: EntryStatus[] = ['lead', 'booked', 'shot', 'editing', 'delivered', 'done', 'cancelled'];
 
@@ -110,7 +110,7 @@ export function EntryCard({
                 className={'seg-btn' + (e.type === t.id ? ' on' : '')}
                 aria-pressed={e.type === t.id}
                 style={{ ['--tc' as string]: t.color }}
-                onClick={() => apply({ type: t.id, ...(!t.money && e.kind === 'job' ? { kind: 'event' } : {}) })}
+                onClick={() => apply({ type: t.id })}
               >
                 <span className="type-dot" style={{ background: t.color }} />
                 {t.name}
@@ -120,16 +120,6 @@ export function EntryCard({
         </div>
 
         <div className="grid2">
-          <div className="field">
-            <label htmlFor="ec-kind">Вид</label>
-            <select id="ec-kind" value={e.kind} onChange={(ev) => apply({ kind: ev.target.value as EntryKind })}>
-              {(Object.keys(KIND_LABELS) as EntryKind[]).map((k) => (
-                <option key={k} value={k}>
-                  {KIND_LABELS[k]}
-                </option>
-              ))}
-            </select>
-          </div>
           <div className="field">
             <label htmlFor="ec-cat">Категория</label>
             <CommitInput
@@ -276,19 +266,7 @@ export function EntryCard({
 
         <ContactBlock doc={doc} entry={e} onPick={(contactId) => apply({ contactId })} />
 
-        <div className="field">
-          <label htmlFor="ec-src">Источник / посредник</label>
-          <select id="ec-src" value={e.sourceId ?? ''} onChange={(ev) => apply({ sourceId: ev.target.value || undefined })}>
-            <option value="">— свой заказ —</option>
-            {doc.sources
-              .filter((s) => !s.deleted || s.id === e.sourceId)
-              .map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-          </select>
-        </div>
+        <SourceBlock doc={doc} entry={e} onPick={(sourceId) => apply({ sourceId })} />
 
         {!personal && (
           <fieldset className="block">
@@ -406,6 +384,61 @@ function telegramLink(c: Contact): string | undefined {
   return undefined;
 }
 
+function SourceBlock({ doc, entry, onPick }: { doc: TrackerDoc; entry: Entry; onPick: (id: string | undefined) => void }) {
+  const [creating, setCreating] = useState(false);
+  const [name, setName] = useState('');
+  const save = () => {
+    const n = name.trim();
+    if (!n) return;
+    const existing = doc.sources.find((s) => !s.deleted && s.name.trim().toLowerCase() === n.toLowerCase());
+    const src = existing ?? makeSource(n);
+    if (!existing) store.upsertSource(src);
+    onPick(src.id);
+    setCreating(false);
+    setName('');
+  };
+  return (
+    <div className="field">
+      <label htmlFor="ec-src">Источник / посредник</label>
+      <div className="row gap wrap">
+        <select id="ec-src" value={entry.sourceId ?? ''} onChange={(ev) => onPick(ev.target.value || undefined)}>
+          <option value="">— свой заказ —</option>
+          {doc.sources
+            .filter((s) => !s.deleted || s.id === entry.sourceId)
+            .map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+        </select>
+        {!creating && (
+          <button type="button" onClick={() => setCreating(true)}>
+            + Новый источник
+          </button>
+        )}
+      </div>
+      {creating && (
+        <div className="row gap wrap">
+          <input
+            placeholder="Имя источника, например Петя"
+            aria-label="Имя нового источника"
+            value={name}
+            autoFocus
+            onChange={(ev) => setName(ev.target.value)}
+            onKeyDown={(ev) => ev.key === 'Enter' && save()}
+          />
+          <button type="button" className="primary" onClick={save} disabled={!name.trim()}>
+            Добавить источник
+          </button>
+          <button type="button" onClick={() => setCreating(false)}>
+            Отмена
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ContactBlock({ doc, entry, onPick }: { doc: TrackerDoc; entry: Entry; onPick: (id: string | undefined) => void }) {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState('');
@@ -444,6 +477,11 @@ function ContactBlock({ doc, entry, onPick }: { doc: TrackerDoc; entry: Entry; o
             ))}
           <option value="__new">+ новый контакт…</option>
         </select>
+        {!creating && (
+          <button type="button" onClick={() => setCreating(true)}>
+            + Новый контакт
+          </button>
+        )}
         {c && phoneVal && (
           <>
             <a className="btn" href={'tel:' + phoneVal.replace(/[^\d+]/g, '')}>

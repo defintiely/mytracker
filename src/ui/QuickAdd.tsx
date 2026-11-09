@@ -154,7 +154,6 @@ function PreviewLine({ p, doc }: { p: Preview; doc: TrackerDoc }) {
   const e = p.parsed.entry;
   const chips: string[] = [];
   if (e.type) chips.push(typeName(doc.settings, e.type));
-  if (e.kind) chips.push(KIND_LABELS[e.kind]);
   if (e.date) chips.push('📅 ' + formatDateRange({ date: e.date, dateEnd: e.dateEnd, dateTentative: !!e.dateTentative }));
   const time = formatTime({ timeStart: e.timeStart, timeEnd: e.timeEnd, timeNote: e.timeNote, allDay: !!e.allDay });
   if (time) chips.push('🕑 ' + time);

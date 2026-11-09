@@ -91,6 +91,32 @@ describe('App', () => {
     expect(store.getDoc().entries[0].money).toEqual([expect.objectContaining({ amount: 500, where: 'owner' })]);
   });
 
+  it('в карточке можно сразу завести новый источник и новый контакт; поля «Вид» нет', () => {
+    const e = newEntry({ title: 'Проект сайта', date: '2030-05-01', status: 'booked', amount: 500 });
+    act(() => store.upsertEntry(e));
+    render(<App />);
+    const nav = screen.getByRole('navigation', { name: 'Разделы' });
+    fireEvent.click(within(nav).getByRole('button', { name: /Задачи/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Канбан' }));
+    fireEvent.click(screen.getByText('Проект сайта'));
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).queryByLabelText('Вид')).toBeNull();
+
+    fireEvent.click(within(dialog).getByRole('button', { name: '+ Новый источник' }));
+    fireEvent.change(within(dialog).getByLabelText('Имя нового источника'), { target: { value: 'Петя' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Добавить источник' }));
+    const doc1 = store.getDoc();
+    expect(doc1.sources.map((s) => s.name)).toEqual(['Петя']);
+    expect(doc1.entries[0].sourceId).toBe(doc1.sources[0].id);
+
+    fireEvent.click(within(dialog).getByRole('button', { name: '+ Новый контакт' }));
+    fireEvent.change(within(dialog).getByPlaceholderText('Имя'), { target: { value: 'Анна' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Сохранить' }));
+    const doc2 = store.getDoc();
+    expect(doc2.contacts.map((c) => c.name)).toEqual(['Анна']);
+    expect(doc2.entries[0].contactId).toBe(doc2.contacts[0].id);
+  });
+
   it('свой тип: добавить в настройках → есть в выборе типа карточки → запись окрашена его цветом', () => {
     const e = newEntry({ title: 'Курс по Excel', date: '2030-05-01', status: 'booked', amount: 300 });
     act(() => store.upsertEntry(e));

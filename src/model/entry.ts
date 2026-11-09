@@ -218,3 +218,14 @@ export function monthLabel(m: YearMonth): string {
   const name = MONTHS_RU[mm - 1];
   return name[0].toUpperCase() + name.slice(1) + ' ' + y;
 }
+
+/**
+ * Вид записи ставится автоматически — пользователь его не выбирает.
+ * Есть дата → «задача» (тип с деньгами) или «дело» (тип без денег); нет даты → «работа без даты»
+ * (есть сумма) или «заметка». Записи-оплаты (предоплата, сертификат, комиссия из импорта) не трогаем.
+ */
+export function autoKind(e: Pick<Entry, 'kind' | 'date' | 'amount' | 'type'>, settings: Settings): EntryKind {
+  if (e.kind === 'payment') return 'payment';
+  if (e.date) return typeHasMoney(settings, e.type) ? 'job' : 'event';
+  return e.amount ? 'work' : 'note';
+}

@@ -3,7 +3,7 @@
 // Синхронизатор (src/sync) читает getDoc()/isDirty() и после слияния вызывает replaceDoc().
 import { openDB, type IDBPDatabase } from 'idb';
 import type { Contact, Entry, Settings, Source, TrackerDoc } from '../model/types';
-import { emptyDoc, normalizeEntries, nowIso, patchEntry } from '../model/entry';
+import { autoKind, emptyDoc, normalizeEntries, nowIso, patchEntry } from '../model/entry';
 import { normalizeTaskTypes } from '../model/taskTypes';
 
 const DB_NAME = 'work-life-tracker';
@@ -52,7 +52,10 @@ export class TrackerStore {
 
   // ---- записи ----
 
-  upsertEntry(e: Entry): void {
+  upsertEntry(input: Entry): void {
+    // Вид записи — служебный и вычисляется сам (по дате, сумме и типу).
+    const kind = input.deleted ? input.kind : autoKind(input, this.doc.settings);
+    const e = kind === input.kind ? input : { ...input, kind };
     const i = this.doc.entries.findIndex((x) => x.id === e.id);
     const entries = [...this.doc.entries];
     if (i >= 0) entries[i] = e;
