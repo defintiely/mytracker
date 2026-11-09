@@ -16,14 +16,15 @@ const HEADER = `/*
  *
  * Как установить (один раз):
  *  1. Удалите всё в этом редакторе, вставьте этот код и нажмите «Сохранить» (значок дискеты).
- *  2. «Развернуть» → «Новое развёртывание» → шестерёнка → «Веб-приложение».
- *     Выполнять от имени: «Я». У кого есть доступ: «Все». Нажмите «Развернуть».
- *  3. Google попросит разрешение: «Предоставить доступ» → ваш аккаунт → «Дополнительные настройки»
- *     → «Перейти на страницу … (небезопасно)» → «Разрешить». Это ваш собственный скрипт.
- *  4. Скопируйте «URL веб-приложения» (оканчивается на /exec) и вставьте его в трекер.
+ *  2. Выдайте разрешения: в списке функций рядом с Run («Выполнить») выберите setup и нажмите Run.
+ *     Review permissions → ваш аккаунт → Advanced («Дополнительные настройки») → Go to … (unsafe)
+ *     → отметьте ВСЕ галочки (Drive и Calendar) → Allow («Разрешить»). Это ваш собственный скрипт.
+ *  3. Deploy («Развернуть») → New deployment → шестерёнка → Web app («Веб-приложение»).
+ *     Execute as: Me («Я»). Who has access: Anyone («Все»). Нажмите Deploy.
+ *  4. Скопируйте Web app URL (оканчивается на /exec) и вставьте его в трекер.
  *
- * Как обновить скрипт: вставьте новый код, сохраните, затем «Развернуть» → «Управление развёртываниями»
- * → карандаш → «Версия: новая версия» → «Развернуть». Ссылка останется прежней.
+ * Как обновить скрипт: вставьте новый код, сохраните, снова запустите setup (Run), затем
+ * Deploy → Manage deployments → карандаш → Version: New version → Deploy. Ссылка останется прежней.
  *
  * Данные лежат в папке «Трекер» в корне вашего Drive: tracker.json и папка «Бэкапы».
  * Доступ «Все» означает, что скрипт отвечает без входа в Google, но без ключа ниже он ничего не отдаёт
@@ -46,6 +47,20 @@ function doPost(e) {
 function doGet(e) {
   return respond_({ ok: true, message: 'Скрипт трекера работает. Скопируйте адрес этой страницы и вставьте его в трекер.' });
 }
+
+/**
+ * Запустите эту функцию из редактора (Run), чтобы Google спросил разрешения на Drive и Календарь.
+ * Без неё окно разрешений может не появиться, и скрипт ответит ошибкой «нет разрешения».
+ */
+function setup() {
+  DriveApp.getRootFolder();
+  CalendarApp.getAllOwnedCalendars();
+  Logger.log('Разрешения выданы. Дальше: Deploy → New deployment → Web app (или New version, если уже развёрнуто).');
+}
+
+var PERMISSION_HELP = 'Скрипту не выданы разрешения. В редакторе скрипта выберите функцию setup → Run → '
+  + 'разрешите доступ ко всему (Drive и Calendar), затем Deploy → Manage deployments → карандаш → '
+  + 'Version: New version → Deploy.';
 
 function respond_(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
@@ -80,7 +95,10 @@ function handle_(text) {
         return fail_('bad_request', 'Неизвестное действие: ' + req.action);
     }
   } catch (err) {
-    return fail_('internal', String((err && err.message) || err));
+    var msg = String((err && err.message) || err);
+    // Текст ошибки Google зависит от языка аккаунта, а адрес разрешения — нет.
+    if (msg.indexOf('googleapis.com/auth/') >= 0) return fail_('internal', PERMISSION_HELP + ' (' + msg + ')');
+    return fail_('internal', msg);
   }
 }
 

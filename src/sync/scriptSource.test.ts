@@ -226,4 +226,20 @@ describe('Apps Script трекера', () => {
     };
     expect(env.post({ k: KEY, action: 'load' })).toEqual({ ok: false, code: 'internal', error: 'Drive недоступен' });
   });
+
+  it('нет разрешения (на любом языке) → подсказка запустить setup', () => {
+    const env = makeEnv();
+    env.root.getFoldersByName = () => {
+      throw new Error(
+        'Δεν έχετε δικαίωμα κλήσης του DriveApp.getRootFolder. Απαιτούμενες άδειες: (https://www.googleapis.com/auth/drive)',
+      );
+    };
+    const r = env.post({ k: KEY, action: 'load' }) as { ok: boolean; error: string };
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/функцию setup/);
+  });
+
+  it('в скрипте есть функция setup для выдачи разрешений', () => {
+    expect(buildScriptSource(KEY)).toMatch(/function setup\(\) \{\s*DriveApp\.getRootFolder\(\);\s*CalendarApp\.getAllOwnedCalendars\(\);/);
+  });
 });
