@@ -34,8 +34,6 @@ import {
   PAY_ICONS,
   addDays,
   contactName,
-  formatDate,
-  formatDateRange,
   formatTime,
   lsGet,
   lsSet,
@@ -51,6 +49,10 @@ import {
 } from './util';
 import { useShowEmptyDays, useTableMode, useTableSort, type SortDir, type TableMode } from './tablePrefs';
 import { YearView } from './YearView';
+import { formatDay, formatDayRange, useDateFormat } from './dates';
+
+/** В таблице год ясен из заголовка месяца — у дат его не дописываем. */
+const IN_TABLE = { year: 'never' } as const;
 
 // ---------- колонки ----------
 
@@ -935,6 +937,7 @@ function Grid({
   const scrollRef = useRef<HTMLDivElement>(null);
   const [editing, setEditing] = useState<EditPos | null>(null);
   const ui = useUi();
+  useDateFormat(); // даты в ячейках перерисовываются сразу при смене формата в «Настройках»
   const template = cols.map((c) => (sizing[c.id] ? `${sizing[c.id]}px` : c.width)).join(' ');
   const minWidth = Math.max(
     MIN_GRID_WIDTH,
@@ -1169,7 +1172,7 @@ function Grid({
                     <div key={c.id} className={'gc gc-' + c.id} role="gridcell" data-col={c.id}>
                       {c.id === 'date' && (
                         <>
-                          <span className="empty-date">{formatDate(it.key, true)}</span>
+                          <span className="empty-date">{formatDay(it.key, { ...IN_TABLE, weekday: true })}</span>
                           <AddDayButton date={it.key} empty />
                         </>
                       )}
@@ -1239,7 +1242,9 @@ function Grid({
 /** «+» — карточка новой записи на эту дату (тот же путь, что тап по дню в календаре: черновик до «Создать»). */
 function AddDayButton({ date, empty, className }: { date: ISODate; empty?: boolean; className?: string }) {
   const ui = useUi();
-  const label = (empty ? 'Добавить на ' : 'Добавить ещё на ') + formatDate(date);
+  useDateFormat();
+  // Подпись — в выбранном формате, но с годом, если он не текущий: экранный диктор не видит заголовок месяца.
+  const label = (empty ? 'Добавить на ' : 'Добавить ещё на ') + formatDay(date);
   return (
     <button
       type="button"
@@ -1273,7 +1278,9 @@ function cellText(e: Entry, col: ColId, doc: TrackerDoc): React.ReactNode {
       );
     case 'date':
       return (
-        <span className={e.dateTentative ? 'tentative' : undefined}>{formatDateRange(e, true)}</span>
+        <span className={e.dateTentative ? 'tentative' : undefined}>
+          {formatDayRange(e, { ...IN_TABLE, weekday: true })}
+        </span>
       );
     case 'time':
       return formatTime(e);
@@ -1523,6 +1530,7 @@ export function TotalsLine({ t, settings }: { t: MonthTotals; settings: Settings
 function MobileList({ items, doc, scrollTo, dir }: { items: Item[]; doc: TrackerDoc; scrollTo?: ISODate; dir: SortDir }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const ui = useUi();
+  useDateFormat();
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scrollRef.current,
@@ -1571,7 +1579,7 @@ function MobileList({ items, doc, scrollTo, dir }: { items: Item[]; doc: Tracker
                 data-index={vi.index}
                 ref={virtualizer.measureElement}
               >
-                <span className="empty-date">{formatDate(it.key, true)}</span>
+                <span className="empty-date">{formatDay(it.key, { ...IN_TABLE, weekday: true })}</span>
                 <AddDayButton date={it.key} empty />
               </div>
             );
@@ -1586,7 +1594,7 @@ function MobileList({ items, doc, scrollTo, dir }: { items: Item[]; doc: Tracker
             >
               <button type="button" className="mlist-row" onClick={() => ui.openEntry(e.id)}>
                 <span className={'mr-date' + (e.dateTentative ? ' tentative' : '')}>
-                  <span>{formatDateRange(e) || '—'}</span>
+                  <span>{formatDayRange(e, IN_TABLE) || '—'}</span>
                   <small>{formatTime(e)}</small>
                 </span>
                 <span className="mr-main">

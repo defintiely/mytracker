@@ -11,6 +11,7 @@ import { CommitInput, CommitTextarea, Modal, PayIcon, StatusBadge, parseAmount, 
 import { MoneyEditor } from './MoneyEditor';
 import { ArrowIcon, PersonIcon, Picker, type PickerItem } from './Picker';
 import { digits, findSource, makeContact, makeSource, mapLink, uniqueSorted, waNumber, withHistory } from './util';
+import { formatDateTime, useDateFormat } from './dates';
 
 const STATUSES: EntryStatus[] = ['lead', 'booked', 'shot', 'editing', 'delivered', 'done', 'cancelled'];
 
@@ -60,6 +61,7 @@ export function EntryCard({
 }) {
   const doc = useTracker();
   const mobile = useIsMobile();
+  useDateFormat();
   const [draft, setDraft] = useState<Entry | undefined>(initialDraft);
   const [opened, setOpened] = useState<SectionKey[]>([]);
   const [justOpened, setJustOpened] = useState<SectionKey | undefined>();
@@ -469,7 +471,7 @@ export function EntryCard({
             <ul>
               {[...e.history].reverse().map((h, i) => (
                 <li key={i}>
-                  <span className="muted">{new Date(h.at).toLocaleString('ru-RU')}</span> — {h.text}
+                  <span className="muted">{formatDateTime(h.at)}</span> — {h.text}
                 </li>
               ))}
             </ul>

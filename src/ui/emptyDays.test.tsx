@@ -65,19 +65,20 @@ describe('Таблица: пустые дни', () => {
     expect(localStorage.getItem(SHOW_EMPTY_DAYS_KEY)).toBe('true');
     // В мае 31 день, 10-е занято записью.
     expect(emptyRows()).toHaveLength(30);
-    expect(screen.getByRole('button', { name: 'Добавить на 01.05.2030' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Добавить на 10.05.2030' })).toBeNull();
+    // Подпись «+» для диктора — с годом (он не видит заголовок месяца), а дата в строке — без: год ясен из месяца.
+    expect(screen.getByRole('button', { name: 'Добавить на 01.05.30' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Добавить на 10.05.30' })).toBeNull();
     // по умолчанию «сначала новые»: первым идёт 31-е
-    expect(emptyDates()[0]).toBe('пт 31.05.2030');
+    expect(emptyDates()[0]).toBe('пт 31.05');
     // Выходные — полосой над первым и под последним рядом блока (при «сначала новые» блок начинается с вс),
     // рамки вокруг даты нет, строка не закрашена.
     const row = (d: string) => screen.getByRole('button', { name: `Добавить на ${d}` }).closest('.empty-row')!;
-    const sun = row('05.05.2030');
-    const sat = row('04.05.2030');
+    const sun = row('05.05.30');
+    const sat = row('04.05.30');
     expect([sun.classList.contains('wk-start'), sun.classList.contains('wk-end')]).toEqual([true, false]);
     expect([sat.classList.contains('wk-start'), sat.classList.contains('wk-end')]).toEqual([false, true]);
     expect(document.querySelector('.date-weekend')).toBeNull();
-    const mon = row('06.05.2030');
+    const mon = row('06.05.30');
     expect(mon.classList.contains('wk-start') || mon.classList.contains('wk-end')).toBe(false);
 
     // Запись 10-го стоит между 11-м и 9-м.
@@ -86,8 +87,8 @@ describe('Таблица: пустые дни', () => {
       .sort((a, b) => Number((a as HTMLElement).dataset.index) - Number((b as HTMLElement).dataset.index))
       .map((el) => (el.classList.contains('entry-row') ? 'запись' : el.querySelector('.empty-date')?.textContent ?? el.className));
     const i = order.indexOf('запись');
-    expect(order[i - 1]).toBe('сб 11.05.2030');
-    expect(order[i + 1]).toBe('чт 09.05.2030');
+    expect(order[i - 1]).toBe('сб 11.05');
+    expect(order[i + 1]).toBe('чт 09.05');
     // Итоги месяца на месте.
     expect(document.querySelector('.grid-total')).toBeTruthy();
 
@@ -163,7 +164,7 @@ describe('Таблица: пустые дни', () => {
 
   it('клик по «+» в ячейке даты не включает редактирование даты', () => {
     render(<TableView />);
-    fireEvent.click(screen.getByRole('button', { name: 'Добавить ещё на 10.05.2030' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Добавить ещё на 10.05.30' }));
     expect(document.querySelector('.cell-input')).toBeNull();
   });
 
@@ -318,11 +319,11 @@ describe('«+» на дату → карточка новой записи', () 
     expect(created.type).toBe('main');
   };
 
-  it('«+» у записи', () => createFrom('Добавить ещё на 10.05.2030', '2030-05-10'));
+  it('«+» у записи', () => createFrom('Добавить ещё на 10.05.30', '2030-05-10'));
 
   it('«+» у пустого дня', () => {
     act(() => setShowEmptyDays(true));
-    createFrom('Добавить на 11.05.2030', '2030-05-11');
+    createFrom('Добавить на 11.05.30', '2030-05-11');
   });
 });
 
@@ -371,8 +372,8 @@ describe('Телефон: компактный список', () => {
     act(() => setShowEmptyDays(true));
     render(<TableView />);
     expect(document.querySelectorAll('.mlist-empty')).toHaveLength(30);
-    expect(screen.getByRole('button', { name: 'Добавить на 01.05.2030' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Добавить ещё на 10.05.2030' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Добавить на 01.05.30' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Добавить ещё на 10.05.30' })).toBeTruthy();
     // строка записи по-прежнему открывает карточку отдельной кнопкой
     expect(screen.getByText('Свадьба').closest('button.mlist-row')).toBeTruthy();
   });

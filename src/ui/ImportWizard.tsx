@@ -9,7 +9,8 @@ import { importOds } from '../ods/importOds';
 import { store } from '../store/store';
 import { useTracker } from '../store/useTracker';
 import { CommitInput, parseAmount } from './common';
-import { errorText, formatDateRange, intermediaryToOwner } from './util';
+import { errorText, intermediaryToOwner } from './util';
+import { formatDayRange, useDateFormat } from './dates';
 
 type Step = 'file' | 'colors' | 'review' | 'done';
 const PAGE = 200;
@@ -330,7 +331,8 @@ function Review(props: {
   onImport: () => void;
 }) {
   const { result, rows, sources, excluded, selected } = props;
-  const idx = rows.map((_, i) => i).filter((i) => !props.onlyLow || rows[i].confidence === 'low');
+  useDateFormat();
+  const idx =rows.map((_, i) => i).filter((i) => !props.onlyLow || rows[i].confidence === 'low');
   const visible = idx.slice(0, props.shown);
   const lowCount = rows.filter((r) => r.confidence === 'low').length;
   const badChecks = result.monthChecks.filter((m) => !m.ok);
@@ -488,7 +490,7 @@ function Review(props: {
                       value={e.date ?? ''}
                       onChange={(ev) => props.patchRow(i, { date: ev.target.value || undefined })}
                     />
-                    <div className="small muted">{formatDateRange(e)}</div>
+                    <div className="small muted">{formatDayRange(e)}</div>
                   </td>
                   <td>
                     <CommitInput aria-label="Название" value={e.title} onCommit={(v) => props.patchRow(i, { title: v })} />

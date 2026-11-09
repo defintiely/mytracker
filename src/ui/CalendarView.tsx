@@ -14,12 +14,12 @@ import {
   addDays,
   coversDay,
   errorText,
-  formatDate,
   overlappingIds,
   parseISODate,
   toISODate,
   todayISO,
 } from './util';
+import { formatDay, useDateFormat } from './dates';
 
 type Mode = 'month' | 'week';
 
@@ -38,6 +38,7 @@ export function CalendarView() {
   const doc = useTracker();
   const ui = useUi();
   const mobile = useIsMobile();
+  useDateFormat();
   const [mode, setMode] = useState<Mode>('month');
   const [anchor, setAnchor] = useState<ISODate>(todayISO());
   const today = todayISO();
@@ -71,7 +72,7 @@ export function CalendarView() {
   const title =
     mode === 'month'
       ? MONTH_NAMES_RU[ad.getMonth()][0].toUpperCase() + MONTH_NAMES_RU[ad.getMonth()].slice(1) + ' ' + ad.getFullYear()
-      : `${formatDate(days[0])} – ${formatDate(days[6])}`;
+      : `${formatDay(days[0])} – ${formatDay(days[6])}`;
 
   return (
     <div className="view calendar-view">
@@ -118,7 +119,7 @@ export function CalendarView() {
               title="Нажмите на пустое место, чтобы добавить запись"
             >
               <div className="cal-num">
-                {mode === 'week' ? `${WEEKDAYS_MON_FIRST[(parseISODate(d).getDay() + 6) % 7]} ${formatDate(d)}` : Number(d.slice(8))}
+                {mode === 'week' ? `${WEEKDAYS_MON_FIRST[(parseISODate(d).getDay() + 6) % 7]} ${formatDay(d, { year: 'never' })}` : Number(d.slice(8))}
                 {overlaps.size > 0 && (
                   <span className="cal-warn" title="Пересечение по времени">
                     ⚠
@@ -170,6 +171,7 @@ function CalEvent({ e, doc, overlap, compact }: { e: Entry; doc: TrackerDoc; ove
 }
 
 function Proposals() {
+  useDateFormat();
   const [list, setList] = useState<CalendarProposal[]>(() => {
     try {
       return getCalendarProposals();
@@ -212,7 +214,7 @@ function Proposals() {
           <div>
             <b>{p.title}</b>{' '}
             <span className="muted small">
-              {[formatDate(p.date), p.timeStart && p.timeStart + (p.timeEnd ? '–' + p.timeEnd : ''), p.location]
+              {[formatDay(p.date),p.timeStart && p.timeStart + (p.timeEnd ? '–' + p.timeEnd : ''), p.location]
                 .filter(Boolean)
                 .join(' · ')}
             </span>

@@ -8,7 +8,8 @@ import type { ParsedLine } from '../ods/types';
 import { parseQuickLine } from '../ods/parseLine';
 import { store } from '../store/store';
 import { useTracker } from '../store/useTracker';
-import { findContactByPhone, findSource, formatDateRange, formatTime, makeContact, makeSource, todayISO } from './util';
+import { findContactByPhone, findSource, formatTime, makeContact, makeSource, todayISO } from './util';
+import { formatDayRange, useDateFormat } from './dates';
 
 interface Preview {
   text: string;
@@ -143,6 +144,7 @@ export function QuickAdd({ onCreated }: { onCreated?: (e: Entry) => void }) {
 }
 
 function PreviewLine({ p, doc }: { p: Preview; doc: TrackerDoc }) {
+  useDateFormat();
   if (!p.parsed) {
     return (
       <div className="pv-line">
@@ -154,7 +156,7 @@ function PreviewLine({ p, doc }: { p: Preview; doc: TrackerDoc }) {
   const e = p.parsed.entry;
   const chips: string[] = [];
   if (e.type) chips.push(typeName(doc.settings, e.type));
-  if (e.date) chips.push('📅 ' + formatDateRange({ date: e.date, dateEnd: e.dateEnd, dateTentative: !!e.dateTentative }));
+  if (e.date) chips.push('📅 ' + formatDayRange({ date: e.date, dateEnd: e.dateEnd, dateTentative: !!e.dateTentative }));
   const time = formatTime({ timeStart: e.timeStart, timeEnd: e.timeEnd, timeNote: e.timeNote, allDay: !!e.allDay });
   if (time) chips.push('🕑 ' + time);
   if (e.category) chips.push(e.category);

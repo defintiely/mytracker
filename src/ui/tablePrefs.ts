@@ -12,7 +12,7 @@ export type SortDir = 'desc' | 'asc';
 /** Вид экрана таблицы: обычная таблица или календарь года (из него открывается один месяц). */
 export type TableMode = 'table' | 'year';
 
-interface DevicePref<T> {
+export interface DevicePref<T> {
   get: () => T;
   set: (v: T) => void;
   use: () => [T, (v: T) => void];
@@ -23,7 +23,7 @@ interface DevicePref<T> {
  * Значение-объект кэшируется по сохранённой строке: useSyncExternalStore требует один и тот же снимок, пока
  * ничего не менялось.
  */
-function devicePref<T>(key: string, fallback: T, parse: (raw: unknown) => T | undefined): DevicePref<T> {
+export function devicePref<T>(key: string, fallback: T, parse: (raw: unknown) => T | undefined): DevicePref<T> {
   const listeners = new Set<() => void>();
   /** Хранилище отказало при записи — дальше значение живёт только в памяти этой вкладки. */
   let storageBroken = false;
@@ -135,3 +135,24 @@ const yearSummary = devicePref<YearSummaryPrefs>(YEAR_SUMMARY_KEY, DEFAULT_YEAR_
 export const getYearSummary = yearSummary.get;
 export const setYearSummary = yearSummary.set;
 export const useYearSummary = yearSummary.use;
+
+// ---------- панель разделов (боковая навигация на ПК/планшете) ----------
+
+export const NAV_SIDE_KEY = 'wlt.nav.side';
+export const NAV_MODE_KEY = 'wlt.nav.mode';
+
+/** С какой стороны экрана панель разделов. */
+export type NavSide = 'left' | 'right';
+/** 'pinned' — всегда открыта; 'drawer' — открывается кнопкой ☰ в шапке и выезжает поверх содержимого. */
+export type NavMode = 'pinned' | 'drawer';
+
+const navSide = devicePref<NavSide>(NAV_SIDE_KEY, 'left', (v) => (v === 'left' || v === 'right' ? v : undefined));
+const navMode = devicePref<NavMode>(NAV_MODE_KEY, 'pinned', (v) => (v === 'pinned' || v === 'drawer' ? v : undefined));
+
+export const getNavSide = navSide.get;
+export const setNavSide = navSide.set;
+export const useNavSide = navSide.use;
+
+export const getNavMode = navMode.get;
+export const setNavMode = navMode.set;
+export const useNavMode = navMode.use;

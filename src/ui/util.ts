@@ -51,26 +51,9 @@ export function isWeekend(s?: ISODate): boolean {
   return wd === 0 || wd === 6;
 }
 
-const WEEKDAYS_SHORT =['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
 export const WEEKDAYS_MON_FIRST = ['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'];
 
-/** «12.12» или «12.12.2025», если год не текущий. */
-export function formatDate(s?: ISODate, withWeekday = false): string {
-  if (!s) return '';
-  const [y, m, d] = s.split('-');
-  const sameYear = Number(y) === new Date().getFullYear();
-  let out = `${d}.${m}` + (sameYear ? '' : `.${y}`);
-  if (withWeekday) out = WEEKDAYS_SHORT[parseISODate(s).getDay()] + ' ' + out;
-  return out;
-}
-
-export function formatDateRange(e: Pick<Entry, 'date' | 'dateEnd' | 'dateTentative'>, withWeekday = false): string {
-  if (!e.date) return '';
-  let s = formatDate(e.date, withWeekday);
-  if (e.dateEnd && e.dateEnd !== e.date) s += '–' + formatDate(e.dateEnd);
-  if (e.dateTentative) s += '?';
-  return s;
-}
+// Вывод дат текстом — formatDay / formatDayRange в ./dates (формат выбирается в «Настройках»).
 
 export function formatTime(e: Pick<Entry, 'timeStart' | 'timeEnd' | 'timeNote' | 'allDay'>): string {
   if (e.timeStart) return e.timeStart + (e.timeEnd ? '–' + e.timeEnd : '');

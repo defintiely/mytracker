@@ -26,8 +26,17 @@ import { CommitInput, Modal, parseAmount } from './common';
 import { useSyncState } from './SyncIndicator';
 import { ImportWizard } from './ImportWizard';
 import { ExportPanel } from './ExportPanel';
-import { errorText, makeContact, makeSource, norm } from './util';
-import { YEAR_SUMMARY_FIELDS, useShowEmptyDays, useYearSummary } from './tablePrefs';
+import { errorText, makeContact, makeSource, norm, todayISO } from './util';
+import {
+  YEAR_SUMMARY_FIELDS,
+  useNavMode,
+  useNavSide,
+  useShowEmptyDays,
+  useYearSummary,
+  type NavMode,
+  type NavSide,
+} from './tablePrefs';
+import { DATE_FORMATS, formatDateTime, formatDay, useDateFormat, type DateFormat } from './dates';
 
 export function SettingsView() {
   const doc = useTracker();
@@ -77,6 +86,7 @@ export function SettingsView() {
           </div>
         </div>
       </section>
+      <AppearanceSection />
       <TableSection />
       <TaskTypesSection s={s} entries={doc.entries} />
       <Categories s={s} />
@@ -91,6 +101,88 @@ export function SettingsView() {
         <ExportPanel />
       </section>
     </div>
+  );
+}
+
+/** Группа переключателей «один из» для настроек внешнего вида. */
+function RadioGroup<T extends string>({
+  legend,
+  name,
+  value,
+  options,
+  onChange,
+}: {
+  legend: string;
+  name: string;
+  value: T;
+  options: { id: T; label: ReactNode }[];
+  onChange: (v: T) => void;
+}) {
+  return (
+    <fieldset className="radio-prefs">
+      <legend>{legend}</legend>
+      {options.map((o) => (
+        <label key={o.id} className="check">
+          <input type="radio" name={name} value={o.id} checked={value === o.id} onChange={() => onChange(o.id)} />{' '}
+          {o.label}
+        </label>
+      ))}
+    </fieldset>
+  );
+}
+
+/** Внешний вид: панель разделов и формат дат — хранятся на этом устройстве, не синхронизируются. */
+function AppearanceSection() {
+  const [side, setSide] = useNavSide();
+  const [mode, setMode] = useNavMode();
+  const [fmt, setFmt] = useDateFormat();
+  const today = todayISO();
+  return (
+    <section className="settings-block">
+      <h2>Внешний вид</h2>
+      <div className="appearance-prefs">
+        <RadioGroup<NavSide>
+          legend="Положение панели"
+          name="nav-side"
+          value={side}
+          onChange={setSide}
+          options={[
+            { id: 'left', label: 'Слева' },
+            { id: 'right', label: 'Справа' },
+          ]}
+        />
+        <RadioGroup<NavMode>
+          legend="Панель"
+          name="nav-mode"
+          value={mode}
+          onChange={setMode}
+          options={[
+            { id: 'pinned', label: 'Всегда открыта' },
+            { id: 'drawer', label: 'Открывается по кнопке' },
+          ]}
+        />
+        <RadioGroup<DateFormat>
+          legend="Формат даты"
+          name="date-format"
+          value={fmt}
+          onChange={setFmt}
+          options={DATE_FORMATS.map((f) => ({
+            id: f.id,
+            label: (
+              <>
+                {f.label} <span className="muted">— {formatDay(today, { format: f.id })}</span>
+              </>
+            ),
+          }))}
+        />
+      </div>
+      <div className="hint">
+        Панель разделов — на компьютере и планшете; на телефоне разделы всегда внизу экрана. «По кнопке» — панель
+        открывается кнопкой ☰ в шапке поверх содержимого, а таблица и остальные экраны занимают всю ширину. Формат даты
+        действует во всём приложении, кроме полей выбора даты и экспорта в .ods; для дат не текущего года год дописывается
+        в конце (в таблице — нет: год виден в заголовке месяца). Настройки действуют только на этом устройстве.
+      </div>
+    </section>
   );
 }
 
@@ -325,6 +417,7 @@ function ScriptSetup() {
 
 /** Подключено: статус, синхронизация, ссылка для второго устройства, отключение, код скрипта. */
 function ScriptConnected({ conn, sync }: { conn: ScriptConnection; sync: SyncState }) {
+  useDateFormat();
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string>();
   const link = connectionLink(conn);
@@ -350,7 +443,7 @@ function ScriptConnected({ conn, sync }: { conn: ScriptConnection; sync: SyncSta
         <span>
           <b>Подключено</b>
           {sync.account ? `: ${sync.account}` : ''}
-          {sync.lastSyncAt ? ` · синхронизировано ${new Date(sync.lastSyncAt).toLocaleString('ru-RU')}` : ''}
+          {sync.lastSyncAt ? ` · синхронизировано ${formatDateTime(sync.lastSyncAt)}` : ''}
         </span>
         <button type="button" className="primary" disabled={busy || sync.status === 'syncing'} onClick={() => void syncNow()}>
           {sync.status === 'syncing' ? 'Синхронизация…' : 'Синхронизировать'}
@@ -391,6 +484,7 @@ function ScriptConnected({ conn, sync }: { conn: ScriptConnection; sync: SyncSta
 
 function GoogleSection() {
   const sync = useSyncState();
+  useDateFormat();
   const [conn, setConn] = useState<ScriptConnection | undefined>(() => getConnection());
   const [conflicts, setConflicts] = useState<Conflict[] | null>(null);
   useEffect(() => {
@@ -437,7 +531,7 @@ function GoogleSection() {
               <tbody>
                 {conflicts.map((c, i) => (
                   <tr key={i}>
-                    <td>{new Date(c.at).toLocaleString('ru-RU')}</td>
+                    <td>{formatDateTime(c.at)}</td>
                     <td>
                       {c.collection} {conflictTitle(c)}
                     </td>

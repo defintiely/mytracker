@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import type { SyncState } from '../sync/types';
 import { syncEngine } from '../sync/syncEngine';
 import { errorText } from './util';
+import { formatDateTime, useDateFormat } from './dates';
 
 export function useSyncState(): SyncState {
   const [s, setS] = useState<SyncState>(() => safeState());
@@ -37,12 +38,13 @@ const LABELS: Record<SyncState['status'], { text: string; icon: string }> = {
 /** onConnect — открыть настройки подключения (вкладка «Настройки»). */
 export function SyncIndicator({ compact, onConnect }: { compact?: boolean; onConnect?: () => void }) {
   const s = useSyncState();
+  useDateFormat();
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string>();
   const l = LABELS[s.status] ?? LABELS.error;
   const title =
     (s.status === 'error' && s.error ? s.error : l.text) +
-    (s.lastSyncAt ? ` · последняя: ${new Date(s.lastSyncAt).toLocaleString('ru-RU')}` : '') +
+    (s.lastSyncAt ? ` · последняя: ${formatDateTime(s.lastSyncAt)}` : '') +
     (s.account ? ` · ${s.account}` : '');
 
   const run = async (fn: () => Promise<void>) => {

@@ -3,7 +3,8 @@ import type { Entry, TrackerDoc } from '../model/types';
 import { formatEUR } from '../model/entry';
 import { typeColor, typeHasMoney } from '../model/taskTypes';
 import { PayIcon, StatusBadge, useUi } from './common';
-import { formatDateRange, formatTime, sourceName } from './util';
+import { formatTime, sourceName } from './util';
+import { formatDayRange, useDateFormat } from './dates';
 
 export function EntryMini({
   e,
@@ -19,7 +20,8 @@ export function EntryMini({
   extra?: React.ReactNode;
 }) {
   const ui = useUi();
-  const when = [formatDateRange(e, true), formatTime(e)].filter(Boolean).join(' · ');
+  useDateFormat();
+  const when = [formatDayRange(e, { weekday: true }), formatTime(e)].filter(Boolean).join(' · ');
   return (
     <div
       className={'mini' + (e.dateTentative ? ' tentative' : '')}

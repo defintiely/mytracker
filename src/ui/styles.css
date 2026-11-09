@@ -243,6 +243,77 @@ code {
   width: 20px;
   text-align: center;
 }
+/* Панель справа (в разметке она после .main) */
+.app.nav-right .sidenav {
+  border-right: 0;
+  border-left: 1px solid var(--border);
+  padding-left: 8px;
+  padding-right: max(8px, env(safe-area-inset-right));
+}
+/* Режим «по кнопке»: панель выезжает поверх содержимого, под ней затемнение */
+.nav-toggle {
+  flex: none;
+  align-self: center;
+}
+.nav-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 0.4);
+  z-index: 40;
+}
+.sidenav.sidenav-drawer {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 240px;
+  max-width: 85vw;
+  overflow-y: auto;
+  z-index: 41;
+  box-shadow: 0 0 24px rgb(0 0 0 / 0.25);
+  animation: nav-in-left 0.18s ease-out;
+}
+.app.nav-right .sidenav.sidenav-drawer {
+  left: auto;
+  right: 0;
+  animation-name: nav-in-right;
+}
+@keyframes nav-in-left {
+  from {
+    transform: translateX(-100%);
+  }
+}
+@keyframes nav-in-right {
+  from {
+    transform: translateX(100%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidenav.sidenav-drawer {
+    animation: none;
+  }
+}
+/* Формат даты и панель в «Настройках → Внешний вид» */
+.appearance-prefs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  align-items: flex-start;
+}
+.radio-prefs {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.radio-prefs legend {
+  font-weight: 600;
+  padding: 0;
+  margin-bottom: 4px;
+}
 .main {
   flex: 1;
   min-width: 0;
