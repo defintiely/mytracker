@@ -40,22 +40,26 @@ var BACKUP_FOLDER_NAME = 'Бэкапы';
 var BACKUPS_KEEP = 30;
 var LOCK_WAIT_MS = 20000;
 
+/**
+ * ЗАПУСТИТЕ ЭТУ ФУНКЦИЮ ПЕРВОЙ: выберите setup рядом с Run и нажмите Run.
+ * Она делает всё, что потом делает скрипт (создаёт папку и файл в Drive, создаёт и сразу удаляет
+ * пробный календарь), поэтому Google спросит сразу все нужные разрешения. Отметьте в окне все галочки.
+ */
+function setup() {
+  var folder = findFolder_(DriveApp.getRootFolder(), FOLDER_NAME, true);
+  folder.createFile('проверка-доступа.txt', 'ok').setTrashed(true);
+  var probe = CalendarApp.createCalendar('Трекер — проверка доступа');
+  probe.deleteCalendar();
+  Logger.log('Готово: разрешения на Drive и Календарь выданы. Дальше: Deploy → New deployment → Web app '
+    + '(если уже развёрнуто — Deploy → Manage deployments → карандаш → Version: New version → Deploy).');
+}
+
 function doPost(e) {
   return respond_(handle_(e && e.postData ? e.postData.contents : ''));
 }
 
 function doGet(e) {
   return respond_({ ok: true, message: 'Скрипт трекера работает. Скопируйте адрес этой страницы и вставьте его в трекер.' });
-}
-
-/**
- * Запустите эту функцию из редактора (Run), чтобы Google спросил разрешения на Drive и Календарь.
- * Без неё окно разрешений может не появиться, и скрипт ответит ошибкой «нет разрешения».
- */
-function setup() {
-  DriveApp.getRootFolder();
-  CalendarApp.getAllOwnedCalendars();
-  Logger.log('Разрешения выданы. Дальше: Deploy → New deployment → Web app (или New version, если уже развёрнуто).');
 }
 
 var PERMISSION_HELP = 'Скрипту не выданы разрешения. В редакторе скрипта выберите функцию setup → Run → '

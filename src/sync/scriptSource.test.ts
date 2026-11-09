@@ -240,6 +240,9 @@ describe('Apps Script трекера', () => {
   });
 
   it('в скрипте есть функция setup для выдачи разрешений', () => {
-    expect(buildScriptSource(KEY)).toMatch(/function setup\(\) \{\s*DriveApp\.getRootFolder\(\);\s*CalendarApp\.getAllOwnedCalendars\(\);/);
+    const src = buildScriptSource(KEY);
+    // setup — первая функция в файле (её Apps Script выбирает в списке по умолчанию) и пишет в Drive и Календарь
+    expect(src.indexOf('function setup()')).toBeLessThan(src.indexOf('function doPost('));
+    expect(src).toMatch(/function setup\(\) \{[\s\S]*?createFile\([\s\S]*?createCalendar\([\s\S]*?deleteCalendar\(\)/);
   });
 });
