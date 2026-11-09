@@ -1,5 +1,5 @@
 // Настройки таблицы, которые живут на устройстве (localStorage), а не в документе: «Показывать пустые дни»,
-// порядок по дате и вид таблицы («Таблица» или «Год»).
+// порядок по дате, вид таблицы («Таблица» или «Год») и поля саммари в карточках года.
 // Подписка — чтобы переключатель в «Настройках» и флажок в панели фильтров таблицы менялись синхронно.
 import { useSyncExternalStore } from 'react';
 
@@ -18,19 +18,29 @@ interface DevicePref<T> {
   use: () => [T, (v: T) => void];
 }
 
-/** Значение на устройстве с подпиской. parse — проверка сохранённого; undefined — взять значение по умолчанию. */
-function devicePref<T extends string | boolean>(key: string, fallback: T, parse: (raw: unknown) => T | undefined): DevicePref<T> {
+/**
+ * Значение на устройстве с подпиской. parse — проверка сохранённого; undefined — взять значение по умолчанию.
+ * Значение-объект кэшируется по сохранённой строке: useSyncExternalStore требует один и тот же снимок, пока
+ * ничего не менялось.
+ */
+function devicePref<T>(key: string, fallback: T, parse: (raw: unknown) => T | undefined): DevicePref<T> {
   const listeners = new Set<() => void>();
   /** Хранилище отказало при записи — дальше значение живёт только в памяти этой вкладки. */
   let storageBroken = false;
   let memory = fallback;
+  let cachedRaw: string | null = null;
+  let cachedValue = fallback;
 
   const get = (): T => {
     if (storageBroken) return memory;
     try {
       const raw = localStorage.getItem(key);
       if (raw === null) return fallback;
-      return parse(JSON.parse(raw)) ?? fallback;
+      if (raw !== cachedRaw) {
+        cachedValue = parse(JSON.parse(raw)) ?? fallback;
+        cachedRaw = raw;
+      }
+      return cachedValue;
     } catch {
       return memory;
     }
@@ -79,3 +89,49 @@ export const useTableSort = tableSort.use;
 export const getTableMode = tableMode.get;
 export const setTableMode = tableMode.set;
 export const useTableMode = tableMode.use;
+
+// ---------- что показывать в саммари карточек вида «Год» ----------
+
+export const YEAR_SUMMARY_KEY = 'wlt.year.summary';
+
+/** Поля саммари карточки месяца; true — показывать. */
+export interface YearSummaryPrefs {
+  count: boolean;
+  turnover: boolean;
+  net: boolean;
+  received: boolean;
+  waiting: boolean;
+}
+export type YearSummaryField = keyof YearSummaryPrefs;
+
+/** Порядок полей и подписи галок в «Настройках». */
+export const YEAR_SUMMARY_FIELDS: { id: YearSummaryField; label: string }[] = [
+  { id: 'count', label: 'Число задач' },
+  { id: 'turnover', label: 'Оборот' },
+  { id: 'net', label: 'Чистыми ≈' },
+  { id: 'received', label: 'Получено' },
+  { id: 'waiting', label: 'Ждём' },
+];
+
+export const DEFAULT_YEAR_SUMMARY: YearSummaryPrefs = Object.freeze({
+  count: true,
+  turnover: true,
+  net: true,
+  received: true,
+  waiting: true,
+});
+
+/** Сохранённое — объект; неизвестные ключи отбрасываются, недостающие и не-булевы берутся по умолчанию. */
+function parseYearSummary(v: unknown): YearSummaryPrefs | undefined {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
+  const src = v as Record<string, unknown>;
+  const out = { ...DEFAULT_YEAR_SUMMARY };
+  for (const { id } of YEAR_SUMMARY_FIELDS) if (typeof src[id] === 'boolean') out[id] = src[id] as boolean;
+  return out;
+}
+
+const yearSummary = devicePref<YearSummaryPrefs>(YEAR_SUMMARY_KEY, DEFAULT_YEAR_SUMMARY, parseYearSummary);
+
+export const getYearSummary = yearSummary.get;
+export const setYearSummary = yearSummary.set;
+export const useYearSummary = yearSummary.use;

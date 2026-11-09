@@ -4,7 +4,8 @@ import { useMemo } from 'react';
 import type { Entry, EntryType, ISODate, TrackerDoc, YearMonth } from '../model/types';
 import { MONTH_NAMES_RU, entryMonth, formatEUR, monthLabel, monthTotals, type MonthTotals } from '../model/entry';
 import { typeColor, typeName } from '../model/taskTypes';
-import { WEEKDAYS_MON_FIRST, WEEKEND_CLASS, addDays, isWeekend, pad2, parseISODate, todayISO } from './util';
+import { WEEKDAYS_MON_FIRST, addDays, pad2, parseISODate, todayISO } from './util';
+import { useYearSummary, type YearSummaryPrefs } from './tablePrefs';
 
 /** Не больше стольких точек типов под днём. */
 const MAX_DOTS = 3;
@@ -43,6 +44,7 @@ export function YearView({
   const today = todayISO();
   const currentMonth = today.slice(0, 7);
   const currentYear = Number(today.slice(0, 4));
+  const [summary] = useYearSummary();
 
   const { cards, dayTypes } = useMemo(() => {
     const prefix = year + '-';
@@ -106,6 +108,7 @@ export function YearView({
             dayTypes={dayTypes}
             today={today}
             current={c.month === currentMonth}
+            summary={summary}
             onOpen={onOpenMonth}
           />
         ))}
@@ -120,6 +123,7 @@ function YearCard({
   dayTypes,
   today,
   current,
+  summary: show,
   onOpen,
 }: {
   card: MonthCard;
@@ -127,6 +131,8 @@ function YearCard({
   dayTypes: Map<ISODate, EntryType[]>;
   today: ISODate;
   current: boolean;
+  /** Какие поля саммари показывать (галки в «Настройках»). */
+  summary: YearSummaryPrefs;
   onOpen: (m: YearMonth, day?: ISODate) => void;
 }) {
   const { month, count, totals: t } = card;
@@ -136,7 +142,9 @@ function YearCard({
   // пустые клетки до первого числа: неделя с понедельника
   const lead = (parseISODate(`${month}-01`).getDay() + 6) % 7;
   const waiting = t.atClient + t.atIntermediary;
+  // подпись для экранного диктора — всегда с числом задач и оборотом, независимо от галок саммари
   const label = `${monthLabel(month)}: ${count} ${tasksWord(count)}, оборот ${formatEUR(t.turnover)}`;
+  const anySummary = show.count || show.turnover || show.net || show.received || show.waiting;
 
   return (
     <div className={'ycard' + (current ? ' is-current' : '') + (count ? '' : ' is-empty')}>
@@ -145,8 +153,8 @@ function YearCard({
         {current && <span className="ycard-now">сейчас</span>}
       </button>
       <div className="ycal">
-        {WEEKDAYS_MON_FIRST.map((w, i) => (
-          <span key={w} className={'ycal-wd' + (i >= 5 ? ' ycal-wd-end' : '')} aria-hidden>
+        {WEEKDAYS_MON_FIRST.map((w) => (
+          <span key={w} className="ycal-wd" aria-hidden>
             {w[0]}
           </span>
         ))}
@@ -162,12 +170,7 @@ function YearCard({
               type="button"
               key={d}
               tabIndex={-1}
-              className={
-                'yday' +
-                (isWeekend(d) ? ' ' + WEEKEND_CLASS : '') +
-                (d === today ? ' is-today' : '') +
-                (types.length ? ' has-entries' : '')
-              }
+              className={'yday' + (d === today ? ' is-today' : '') + (types.length ? ' has-entries' : '')}
               aria-label={`Открыть ${i + 1} ${monthGenitive(mm)} ${y}` + (names ? ` (${names})` : '')}
               title={names || undefined}
               onClick={() => onOpen(month, d)}
@@ -182,32 +185,42 @@ function YearCard({
           );
         })}
       </div>
-      {count === 0 ? (
+      {!anySummary ? null : count === 0 ? (
         <p className="ycard-sum muted">Записей нет</p>
       ) : (
         <dl className="ycard-sum">
-          <div>
-            <dt>Задач</dt>
-            <dd>{count}</dd>
-          </div>
-          <div>
-            <dt>Оборот</dt>
-            <dd>
-              <b>{formatEUR(t.turnover)}</b>
-            </dd>
-          </div>
-          <div>
-            <dt>Чистыми ≈</dt>
-            <dd>{formatEUR(t.net)}</dd>
-          </div>
-          <div>
-            <dt>Получено</dt>
-            <dd>{formatEUR(t.received)}</dd>
-          </div>
-          <div title={`у клиентов ${formatEUR(t.atClient)} · у посредников ${formatEUR(t.atIntermediary)}`}>
-            <dt>Ждём</dt>
-            <dd>{formatEUR(waiting)}</dd>
-          </div>
+          {show.count && (
+            <div>
+              <dt>Задач</dt>
+              <dd>{count}</dd>
+            </div>
+          )}
+          {show.turnover && (
+            <div>
+              <dt>Оборот</dt>
+              <dd>
+                <b>{formatEUR(t.turnover)}</b>
+              </dd>
+            </div>
+          )}
+          {show.net && (
+            <div>
+              <dt>Чистыми ≈</dt>
+              <dd>{formatEUR(t.net)}</dd>
+            </div>
+          )}
+          {show.received && (
+            <div>
+              <dt>Получено</dt>
+              <dd>{formatEUR(t.received)}</dd>
+            </div>
+          )}
+          {show.waiting && (
+            <div title={`у клиентов ${formatEUR(t.atClient)} · у посредников ${formatEUR(t.atIntermediary)}`}>
+              <dt>Ждём</dt>
+              <dd>{formatEUR(waiting)}</dd>
+            </div>
+          )}
         </dl>
       )}
     </div>

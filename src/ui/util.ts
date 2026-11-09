@@ -51,9 +51,6 @@ export function isWeekend(s?: ISODate): boolean {
   return wd === 0 || wd === 6;
 }
 
-/** Класс рамки вокруг даты выходного дня (цвет в таблице занят типами задач, поэтому выходные — рамкой). */
-export const WEEKEND_CLASS = 'date-weekend';
-
 const WEEKDAYS_SHORT =['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
 export const WEEKDAYS_MON_FIRST = ['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'];
 

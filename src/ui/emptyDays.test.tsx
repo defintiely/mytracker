@@ -69,12 +69,16 @@ describe('Таблица: пустые дни', () => {
     expect(screen.queryByRole('button', { name: 'Добавить на 10.05.2030' })).toBeNull();
     // по умолчанию «сначала новые»: первым идёт 31-е
     expect(emptyDates()[0]).toBe('пт 31.05.2030');
-    // Выходные — рамкой вокруг даты, строка не закрашена и не приглушена.
-    const sat = screen.getByRole('button', { name: 'Добавить на 04.05.2030' }).closest('.empty-row')!;
-    expect(sat.querySelector('.empty-date')!.classList.contains('date-weekend')).toBe(true);
-    expect(sat.classList.contains('weekend')).toBe(false);
-    const mon = screen.getByRole('button', { name: 'Добавить на 06.05.2030' }).closest('.empty-row')!;
-    expect(mon.querySelector('.empty-date')!.classList.contains('date-weekend')).toBe(false);
+    // Выходные — полосой над первым и под последним рядом блока (при «сначала новые» блок начинается с вс),
+    // рамки вокруг даты нет, строка не закрашена.
+    const row = (d: string) => screen.getByRole('button', { name: `Добавить на ${d}` }).closest('.empty-row')!;
+    const sun = row('05.05.2030');
+    const sat = row('04.05.2030');
+    expect([sun.classList.contains('wk-start'), sun.classList.contains('wk-end')]).toEqual([true, false]);
+    expect([sat.classList.contains('wk-start'), sat.classList.contains('wk-end')]).toEqual([false, true]);
+    expect(document.querySelector('.date-weekend')).toBeNull();
+    const mon = row('06.05.2030');
+    expect(mon.classList.contains('wk-start') || mon.classList.contains('wk-end')).toBe(false);
 
     // Запись 10-го стоит между 11-м и 9-м.
     const body = document.querySelector('.grid-body')!;
@@ -195,6 +199,107 @@ describe('Таблица: пустые дни', () => {
     expect(none.filter((x) => x.k === 'empty')).toHaveLength(28);
     // выключено — как раньше
     expect(buildItems([a, b], doc).some((x) => x.k === 'empty')).toBe(false);
+  });
+});
+
+describe('buildItems: обводка выходных', () => {
+  // май 2030: 3-е — пятница, 4-е — суббота, 5-е — воскресенье, 6-е — понедельник;
+  // 31 августа 2030 — суббота, 1 сентября — воскресенье
+  type Flag = [string, boolean, boolean];
+  const flags = (items: ReturnType<typeof buildItems>): Flag[] =>
+    items.flatMap((x): Flag[] =>
+      x.k === 'row'
+        ? [[x.entry.title, !!x.weekendStart, !!x.weekendEnd]]
+        : x.k === 'empty'
+          ? [[x.key.slice(5), !!x.weekendStart, !!x.weekendEnd]]
+          : [],
+    );
+  const mk = (title: string, date: string, timeStart?: string) => newEntry({ title, date, timeStart });
+  const doc = emptyDoc();
+
+  it('сб и вс записями подряд: полоса до первой и после последней, между ними нет — в обе стороны', () => {
+    const list = [mk('пт', '2030-05-03'), mk('сб', '2030-05-04'), mk('вс', '2030-05-05'), mk('пн', '2030-05-06')];
+    expect(flags(buildItems(list, doc, undefined, 'asc'))).toEqual([
+      ['пт', false, false],
+      ['сб', true, false],
+      ['вс', false, true],
+      ['пн', false, false],
+    ]);
+    expect(flags(buildItems(list, doc, undefined, 'desc'))).toEqual([
+      ['пн', false, false],
+      ['вс', true, false],
+      ['сб', false, true],
+      ['пт', false, false],
+    ]);
+  });
+
+  it('несколько записей в один выходной — одна обводка на весь блок', () => {
+    const list = [mk('сб-1', '2030-05-04', '10:00'), mk('сб-2', '2030-05-04', '15:00'), mk('вс', '2030-05-05')];
+    expect(flags(buildItems(list, doc, undefined, 'asc'))).toEqual([
+      ['сб-1', true, false],
+      ['сб-2', false, false],
+      ['вс', false, true],
+    ]);
+    expect(flags(buildItems(list, doc, undefined, 'desc'))).toEqual([
+      ['вс', true, false],
+      ['сб-2', false, false],
+      ['сб-1', false, true],
+    ]);
+  });
+
+  it('только суббота (или только воскресенье) — обе полосы на ней', () => {
+    const list = [mk('пт', '2030-05-03'), mk('сб', '2030-05-04'), mk('пн', '2030-05-06'), mk('вс-12', '2030-05-12')];
+    for (const dir of ['asc', 'desc'] as const) {
+      const f = Object.fromEntries(flags(buildItems(list, doc, undefined, dir)).map(([t, s, e]) => [t, [s, e]]));
+      expect(f).toEqual({ пт: [false, false], сб: [true, true], пн: [false, false], 'вс-12': [true, true] });
+    }
+  });
+
+  it('пустые дни и записи вперемешку', () => {
+    // запись в субботу, воскресенье пустое; запись в воскресенье 12-го, суббота 11-го пустая
+    const list = [mk('сб', '2030-05-04'), mk('вс', '2030-05-12')];
+    const opts = { currentMonth: '2030-05', from: '2030-05', to: '2030-05' };
+    const pick = (dir: 'asc' | 'desc') =>
+      flags(buildItems(list, doc, opts, dir)).filter(([t]) => ['сб', '05-05', '05-06', '05-03', '05-11', 'вс'].includes(t));
+    expect(pick('asc')).toEqual([
+      ['05-03', false, false],
+      ['сб', true, false],
+      ['05-05', false, true],
+      ['05-06', false, false],
+      ['05-11', true, false],
+      ['вс', false, true],
+    ]);
+    expect(pick('desc')).toEqual([
+      ['вс', true, false],
+      ['05-11', false, true],
+      ['05-06', false, false],
+      ['05-05', true, false],
+      ['сб', false, true],
+      ['05-03', false, false],
+    ]);
+  });
+
+  it('выходные через границу месяца — заголовок месяца разрывает блок', () => {
+    const list = [mk('сб-31', '2030-08-31'), mk('вс-1', '2030-09-01')];
+    for (const dir of ['asc', 'desc'] as const) {
+      expect(flags(buildItems(list, doc, undefined, dir)).map(([, s, e]) => [s, e])).toEqual([
+        [true, true],
+        [true, true],
+      ]);
+    }
+  });
+
+  it('в таблице полосы — классами строк записей', () => {
+    seed(mk('Суббота', '2030-05-04'), mk('Воскресенье', '2030-05-05'), mk('Понедельник', '2030-05-06'));
+    act(() => setTableSort('asc'));
+    render(<TableView />);
+    const cls = (t: string) => {
+      const r = screen.getByText(t).closest('.entry-row')!;
+      return [r.classList.contains('wk-start'), r.classList.contains('wk-end')];
+    };
+    expect(cls('Суббота')).toEqual([true, false]);
+    expect(cls('Воскресенье')).toEqual([false, true]);
+    expect(cls('Понедельник')).toEqual([false, false]);
   });
 });
 

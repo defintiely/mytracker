@@ -1,13 +1,23 @@
 // @vitest-environment jsdom
-// Таблица: порядок по дате (новые/старые), вид «Год» с карточками месяцев и вид «Месяц», выходные рамкой.
+// Таблица: порядок по дате (новые/старые), вид «Год» с карточками месяцев и вид «Месяц», выходные полосой,
+// галки саммари карточек года.
 import 'fake-indexeddb/auto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { store } from '../store/store';
 import { emptyDoc, newEntry } from '../model/entry';
 import { TableView, buildItems } from './TableView';
-import { TABLE_MODE_KEY, TABLE_SORT_KEY, setShowEmptyDays, setTableMode, setTableSort } from './tablePrefs';
+import {
+  TABLE_MODE_KEY,
+  TABLE_SORT_KEY,
+  YEAR_SUMMARY_KEY,
+  setShowEmptyDays,
+  setTableMode,
+  setTableSort,
+  setYearSummary,
+} from './tablePrefs';
 import { tasksWord } from './YearView';
+import { App } from '../App';
 
 // jsdom не считает раскладку — задаём размеры, чтобы виртуализатор рисовал строки (как в emptyDays.test).
 const sizeProps = ['clientWidth', 'clientHeight', 'offsetHeight'] as const;
@@ -140,19 +150,20 @@ describe('Порядок по дате', () => {
   });
 });
 
-describe('Выходные — рамкой', () => {
-  it('у записи на выходной дата в рамке, у записи в будний день — нет; фон строки — цвет типа', () => {
+describe('Выходные — полосой вокруг ряда', () => {
+  it('одиночная суббота — полосы сверху и снизу её строки, у будней — нет; рамки у даты нет; фон строки — цвет типа', () => {
     seed(
       newEntry({ title: 'Суббота', date: '2030-05-04', amount: 10 }),
       newEntry({ title: 'Понедельник', date: '2030-05-06', amount: 10 }),
     );
     render(<TableView />);
-    const dateSpan = (title: string) =>
-      screen.getByText(title).closest('.entry-row')!.querySelector('[data-col="date"] .cell-view > span')!;
-    expect(dateSpan('Суббота').classList.contains('date-weekend')).toBe(true);
-    expect(dateSpan('Понедельник').classList.contains('date-weekend')).toBe(false);
-    const row = screen.getByText('Суббота').closest('.entry-row') as HTMLElement;
-    expect(row.style.getPropertyValue('--tc')).toBeTruthy();
+    const row = (title: string) => screen.getByText(title).closest('.entry-row') as HTMLElement;
+    expect(row('Суббота').classList.contains('wk-start')).toBe(true);
+    expect(row('Суббота').classList.contains('wk-end')).toBe(true);
+    expect(row('Понедельник').classList.contains('wk-start')).toBe(false);
+    expect(row('Понедельник').classList.contains('wk-end')).toBe(false);
+    expect(document.querySelector('.date-weekend')).toBeNull();
+    expect(row('Суббота').style.getPropertyValue('--tc')).toBeTruthy();
   });
 });
 
@@ -180,9 +191,10 @@ describe('Вид «Год»', () => {
     expect(mayCard.querySelectorAll('.yday.has-entries')).toHaveLength(2);
     const jan = screen.getByRole('button', { name: `Январь ${YEAR}: 0 задач, оборот €0` }).closest('.ycard')!;
     expect(jan.classList.contains('is-empty')).toBe(true);
-    // выходные в мини-календаре — рамкой
-    const weekendDays = mayCard.querySelectorAll('.yday.date-weekend');
-    expect(weekendDays.length).toBeGreaterThanOrEqual(8);
+    // выходные в мини-календаре никак не выделены: ни у дней, ни у подписей дней недели
+    const dayClasses = [...mayCard.querySelectorAll('.ycal > *')].map((el) => el.className);
+    expect(dayClasses.filter((c) => /weekend|wd-end/.test(c))).toEqual([]);
+    expect(mayCard.querySelectorAll('.yday')).toHaveLength(31);
 
     fireEvent.click(screen.getByRole('button', { name: 'Предыдущий год' }));
     expect(screen.getByRole('heading', { name: String(YEAR - 1) })).toBeTruthy();
@@ -275,6 +287,68 @@ describe('Вид «Год»', () => {
   });
 });
 
+describe('Саммари карточек года — галки в настройках', () => {
+  const nav = () => screen.getByRole('navigation', { name: 'Разделы' });
+  const mayCard = () => screen.getByRole('button', { name: new RegExp(`^Май ${YEAR}:`) }).closest('.ycard') as HTMLElement;
+  const shown = () => [...mayCard().querySelectorAll('.ycard-sum dt')].map((d) => d.textContent);
+
+  it('по умолчанию всё включено; снятые галки скрывают поля, сохраняются на устройстве; все сняты — только название и календарь', () => {
+    render(<App />);
+    fireEvent.click(within(nav()).getByRole('button', { name: /Настройки/ }));
+    const box = (name: string) => screen.getByRole('checkbox', { name }) as HTMLInputElement;
+    const names = ['Число задач', 'Оборот', 'Чистыми ≈', 'Получено', 'Ждём'];
+    expect(names.map((n) => box(n).checked)).toEqual([true, true, true, true, true]);
+    fireEvent.click(box('Оборот'));
+    fireEvent.click(box('Ждём'));
+    expect(JSON.parse(localStorage.getItem(YEAR_SUMMARY_KEY)!)).toEqual({
+      count: true,
+      turnover: false,
+      net: true,
+      received: true,
+      waiting: false,
+    });
+
+    fireEvent.click(within(nav()).getByRole('button', { name: /Таблица/ }));
+    fireEvent.click(modeBtn('Год'));
+    expect(shown()).toEqual(['Задач', 'Чистыми ≈', 'Получено']);
+    // подпись карточки для диктора от галок не зависит
+    expect(screen.getByRole('button', { name: `Май ${YEAR}: 2 задачи, оборот €500` })).toBeTruthy();
+
+    fireEvent.click(within(nav()).getByRole('button', { name: /Настройки/ }));
+    for (const n of names) if (box(n).checked) fireEvent.click(box(n));
+    fireEvent.click(within(nav()).getByRole('button', { name: /Таблица/ }));
+    expect(document.querySelectorAll('.ycard')).toHaveLength(12);
+    expect(document.querySelector('.ycard-sum')).toBeNull();
+    expect(screen.queryByText('Записей нет')).toBeNull();
+    expect(mayCard().querySelector('.ycard-name')!.textContent).toBe('Май');
+    expect(mayCard().querySelectorAll('.yday')).toHaveLength(31);
+    expect(screen.getByRole('button', { name: `Май ${YEAR}: 2 задачи, оборот €500` })).toBeTruthy();
+
+    // после перезапуска экрана настройка та же
+    cleanup();
+    render(<TableView />);
+    expect(document.querySelector('.ycard-sum')).toBeNull();
+  });
+
+  it('карточки обновляются сразу при смене настройки', () => {
+    act(() => setTableMode('year'));
+    render(<TableView />);
+    expect(shown()).toEqual(['Задач', 'Оборот', 'Чистыми ≈', 'Получено', 'Ждём']);
+    act(() => setYearSummary({ count: false, turnover: true, net: false, received: false, waiting: false }));
+    expect(shown()).toEqual(['Оборот']);
+    // одно поле включено — у пустого месяца по-прежнему «Записей нет»
+    const jan = screen.getByRole('button', { name: new RegExp(`^Январь ${YEAR}:`) }).closest('.ycard')!;
+    expect(jan.querySelector('p.ycard-sum')!.textContent).toBe('Записей нет');
+  });
+
+  it('испорченное значение в хранилище — все поля по умолчанию', () => {
+    localStorage.setItem(YEAR_SUMMARY_KEY, JSON.stringify({ turnover: 'нет', waiting: false, лишнее: true }));
+    act(() => setTableMode('year'));
+    render(<TableView />);
+    expect(shown()).toEqual(['Задач', 'Оборот', 'Чистыми ≈', 'Получено']);
+  });
+});
+
 describe('Телефон', () => {
   const savedMatchMedia = window.matchMedia;
   beforeEach(() => {
@@ -289,7 +363,7 @@ describe('Телефон', () => {
     window.matchMedia = savedMatchMedia;
   });
 
-  it('«Год» → карточки, «Месяц» → компактный список только этого месяца; выходные рамкой', () => {
+  it('«Год» → карточки, «Месяц» → компактный список только этого месяца; выходные полосой', () => {
     // первая суббота мая текущего года, следующее за ней воскресенье и среда той же недели
     let sat = 1;
     while (new Date(YEAR, 4, sat).getDay() !== 6) sat++;
@@ -309,15 +383,16 @@ describe('Телефон', () => {
     expect(document.querySelector('.mlist-scroll')).toBeTruthy();
     expect(screen.getByText('Суббота')).toBeTruthy();
     expect(screen.queryByText('Июнь')).toBeNull();
-    const satDate = screen.getByText('Суббота').closest('.mlist-row')!.querySelector('.mr-date > span')!;
-    expect(satDate.classList.contains('date-weekend')).toBe(true);
-    const wedDate = screen.getByText('Среда').closest('.mlist-row')!.querySelector('.mr-date > span')!;
-    expect(wedDate.classList.contains('date-weekend')).toBe(false);
-    // пустой выходной в списке — тоже рамкой, без закраски строки
+    expect(document.querySelector('.date-weekend')).toBeNull();
+    // «сначала новые»: блок выходных — пустое воскресенье (полоса над ним), затем запись субботы (полоса под ней)
+    const satRow = screen.getByText('Суббота').closest('.mlist-entry')!;
+    expect([satRow.classList.contains('wk-start'), satRow.classList.contains('wk-end')]).toEqual([false, true]);
+    const wedRow = screen.getByText('Среда').closest('.mlist-entry')!;
+    expect(wedRow.classList.contains('wk-start') || wedRow.classList.contains('wk-end')).toBe(false);
     // дата текущего года подписывается без года
     const sunLabel = `Добавить на ${String(sat + 1).padStart(2, '0')}.05`;
     const sun = screen.getByRole('button', { name: sunLabel }).closest('.mlist-empty')!;
-    expect(sun.querySelector('.empty-date')!.classList.contains('date-weekend')).toBe(true);
+    expect([sun.classList.contains('wk-start'), sun.classList.contains('wk-end')]).toEqual([true, false]);
     expect(sun.classList.contains('weekend')).toBe(false);
   });
 });

@@ -27,7 +27,7 @@ import { useSyncState } from './SyncIndicator';
 import { ImportWizard } from './ImportWizard';
 import { ExportPanel } from './ExportPanel';
 import { errorText, makeContact, makeSource, norm } from './util';
-import { useShowEmptyDays } from './tablePrefs';
+import { YEAR_SUMMARY_FIELDS, useShowEmptyDays, useYearSummary } from './tablePrefs';
 
 export function SettingsView() {
   const doc = useTracker();
@@ -97,6 +97,7 @@ export function SettingsView() {
 /** Настройки экрана «Таблица» — хранятся на этом устройстве, не синхронизируются. */
 function TableSection() {
   const [showEmpty, setShowEmpty] = useShowEmptyDays();
+  const [summary, setSummary] = useYearSummary();
   return (
     <section className="settings-block">
       <h2>Таблица</h2>
@@ -109,6 +110,23 @@ function TableSection() {
         день. Пока включён поиск или фильтр по типу, источнику или оплате, пустые дни скрыты. Настройка действует только на
         этом устройстве; то же переключает флажок «Пустые дни» над таблицей.
       </div>
+      <fieldset className="year-summary-prefs">
+        <legend>Саммари в карточках года</legend>
+        {YEAR_SUMMARY_FIELDS.map(({ id, label }) => (
+          <label key={id} className="check">
+            <input
+              type="checkbox"
+              checked={summary[id]}
+              onChange={(e) => setSummary({ ...summary, [id]: e.target.checked })}
+            />{' '}
+            {label}
+          </label>
+        ))}
+        <div className="hint">
+          Что показывать под мини-календарём в карточках месяцев (вид «Год»). Если снять все галки, в карточке останутся
+          только название месяца и календарь. Настройка действует только на этом устройстве.
+        </div>
+      </fieldset>
     </section>
   );
 }

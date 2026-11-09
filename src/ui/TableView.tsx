@@ -37,9 +37,7 @@ import {
   formatDate,
   formatDateRange,
   formatTime,
-  isWeekend,
   lsGet,
-  WEEKEND_CLASS,
   lsSet,
   methodLabel,
   moneySummary,
@@ -250,10 +248,19 @@ export function narrowsEntries(f: Filters): boolean {
   return Boolean(f.q.trim() || f.types.length || f.pay || f.source);
 }
 
+/**
+ * Обводка выходных: weekendStart — первая строка блока сб/вс одной недели по ходу чтения (полоса над ней),
+ * weekendEnd — последняя (полоса под ней). У блока из одной строки — оба флага.
+ */
+export interface WeekendEdge {
+  weekendStart?: boolean;
+  weekendEnd?: boolean;
+}
+
 export type Item =
   | { k: 'month'; key: string; label: string; count: number }
-  | { k: 'row'; entry: Entry }
-  | { k: 'empty'; key: ISODate; weekend: boolean }
+  | ({ k: 'row'; entry: Entry } & WeekendEdge)
+  | ({ k: 'empty'; key: ISODate } & WeekendEdge)
   | { k: 'total'; key: string; t: MonthTotals };
 
 const NO_MONTH = '__none';
@@ -329,8 +336,7 @@ export function buildItems(entries: Entry[], doc: TrackerDoc, emptyDays?: EmptyD
       /** Выложить пустые дни, которые по порядку идут раньше until (без until — все оставшиеся). */
       const flush = (until?: ISODate) => {
         for (; di < days.length && (until === undefined || before(days[di], until)); di++) {
-          const wd = parseISODate(days[di]).getDay();
-          items.push({ k: 'empty', key: days[di], weekend: wd === 0 || wd === 6 });
+          items.push({ k: 'empty', key: days[di] });
         }
       };
       for (const e of list) {
@@ -343,7 +349,41 @@ export function buildItems(entries: Entry[], doc: TrackerDoc, emptyDays?: EmptyD
     }
     if (k !== NO_MONTH && list.length) items.push({ k: 'total', key: k, t: monthTotals(list, k, doc.settings) });
   }
+  return markWeekends(items);
+}
+
+/** Выходные какой недели у строки: дата её субботы; не выходной или без даты — undefined. Запись — по дню начала. */
+function weekendOf(it: Item | undefined): ISODate | undefined {
+  const d = it?.k === 'row' ? it.entry.date : it?.k === 'empty' ? it.key : undefined;
+  if (!d) return undefined;
+  const wd = parseISODate(d).getDay();
+  return wd === 6 ? d : wd === 0 ? addDays(d, -1) : undefined;
+}
+
+/**
+ * Проставляет строкам флаги обводки выходных. Блок — подряд идущие строки (записи и пустые дни) с датой сб/вс
+ * одной недели; заголовок месяца, итоги или будний день блок прерывают. Порядок чтения уже задан самим items,
+ * поэтому при «сначала новые» блок начинается с воскресенья, при «сначала старые» — с субботы.
+ */
+export function markWeekends(items: Item[]): Item[] {
+  const weeks = items.map(weekendOf);
+  items.forEach((it, i) => {
+    if (it.k !== 'row' && it.k !== 'empty') return;
+    const w = weeks[i];
+    if (!w) {
+      delete it.weekendStart;
+      delete it.weekendEnd;
+      return;
+    }
+    it.weekendStart = weeks[i - 1] !== w;
+    it.weekendEnd = weeks[i + 1] !== w;
+  });
   return items;
+}
+
+/** Классы полос выходных у строки таблицы или списка. */
+function weekendClass(it: WeekendEdge): string {
+  return (it.weekendStart ? ' wk-start' : '') + (it.weekendEnd ? ' wk-end' : '');
 }
 
 /**
@@ -1119,7 +1159,7 @@ function Grid({
               return (
                 <div
                   key={vi.key}
-                  className="grid-row empty-row"
+                  className={'grid-row empty-row' + weekendClass(it)}
                   style={style}
                   data-index={vi.index}
                   ref={virtualizer.measureElement}
@@ -1129,9 +1169,7 @@ function Grid({
                     <div key={c.id} className={'gc gc-' + c.id} role="gridcell" data-col={c.id}>
                       {c.id === 'date' && (
                         <>
-                          <span className={'empty-date' + (it.weekend ? ' ' + WEEKEND_CLASS : '')}>
-                            {formatDate(it.key, true)}
-                          </span>
+                          <span className="empty-date">{formatDate(it.key, true)}</span>
                           <AddDayButton date={it.key} empty />
                         </>
                       )}
@@ -1143,7 +1181,7 @@ function Grid({
             return (
               <div
                 key={vi.key}
-                className={'grid-row entry-row' + (e.status === 'cancelled' ? ' cancelled' : '')}
+                className={'grid-row entry-row' + (e.status === 'cancelled' ? ' cancelled' : '') + weekendClass(it)}
                 style={{ ...style, ['--tc' as string]: typeColor(doc.settings, e.type) }}
                 data-index={vi.index}
                 ref={virtualizer.measureElement}
@@ -1235,9 +1273,7 @@ function cellText(e: Entry, col: ColId, doc: TrackerDoc): React.ReactNode {
       );
     case 'date':
       return (
-        <span className={[e.dateTentative ? 'tentative' : '', isWeekend(e.date) ? WEEKEND_CLASS : ''].filter(Boolean).join(' ')}>
-          {formatDateRange(e, true)}
-        </span>
+        <span className={e.dateTentative ? 'tentative' : undefined}>{formatDateRange(e, true)}</span>
       );
     case 'time':
       return formatTime(e);
@@ -1530,12 +1566,12 @@ function MobileList({ items, doc, scrollTo, dir }: { items: Item[]; doc: Tracker
             return (
               <div
                 key={vi.key}
-                className="mlist-empty"
+                className={'mlist-empty' + weekendClass(it)}
                 style={style}
                 data-index={vi.index}
                 ref={virtualizer.measureElement}
               >
-                <span className={'empty-date' + (it.weekend ? ' ' + WEEKEND_CLASS : '')}>{formatDate(it.key, true)}</span>
+                <span className="empty-date">{formatDate(it.key, true)}</span>
                 <AddDayButton date={it.key} empty />
               </div>
             );
@@ -1543,14 +1579,14 @@ function MobileList({ items, doc, scrollTo, dir }: { items: Item[]; doc: Tracker
           return (
             <div
               key={vi.key}
-              className="mlist-entry"
+              className={'mlist-entry' + weekendClass(it)}
               style={{ ...style, ['--tc' as string]: typeColor(doc.settings, e.type) }}
               data-index={vi.index}
               ref={virtualizer.measureElement}
             >
               <button type="button" className="mlist-row" onClick={() => ui.openEntry(e.id)}>
                 <span className={'mr-date' + (e.dateTentative ? ' tentative' : '')}>
-                  <span className={isWeekend(e.date) ? WEEKEND_CLASS : undefined}>{formatDateRange(e) || '—'}</span>
+                  <span>{formatDateRange(e) || '—'}</span>
                   <small>{formatTime(e)}</small>
                 </span>
                 <span className="mr-main">

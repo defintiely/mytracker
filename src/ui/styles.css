@@ -863,21 +863,27 @@ button.chip {
   text-overflow: ellipsis;
   color: color-mix(in srgb, var(--text) 70%, transparent);
 }
-/* Выходной (сб/вс) — рамка вокруг даты, а не цвет: цвет в таблице означает тип задачи. */
-.date-weekend {
-  display: inline-block;
-  padding: 0 4px;
-  border: 1px solid var(--text);
-  border-radius: 4px;
-  line-height: 1.35;
+/*
+ * Выходные (сб/вс одной недели) — толстая полоса перед первым рядом блока и после последнего, по ходу чтения.
+ * Не цвет: цвет в таблице означает тип задачи. Полоса рисуется псевдоэлементом поверх строки — высота строки,
+ * которую меряет виртуализатор, не меняется, а фон кнопки строки на телефоне её не перекрывает.
+ */
+.wk-start::before,
+.wk-end::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--text);
+  pointer-events: none;
+  z-index: 2;
 }
-.empty-date.date-weekend {
-  margin-left: 2px;
-  padding: 0 5px;
-  color: var(--text);
+.wk-start::before {
+  top: 0;
 }
-.mr-date > .date-weekend {
-  align-self: flex-start;
+.wk-end::after {
+  bottom: 0;
 }
 .day-add-empty {
   min-width: 22px;
@@ -1003,8 +1009,11 @@ button.chip {
   border: 2px solid var(--accent);
   padding: 9px 11px 11px;
 }
+/* пустой месяц приглушён, но сегодняшний день и дни с задачами (многодневная запись из соседнего месяца) —
+   нет: им нужен полный контраст */
 .ycard.is-empty .ycard-name,
-.ycard.is-empty .ycal,
+.ycard.is-empty .ycal-wd,
+.ycard.is-empty .yday:not(.is-today):not(.has-entries),
 .ycard.is-empty .ycard-sum {
   opacity: 0.55;
 }
@@ -1063,9 +1072,12 @@ button.chip {
   gap: 1px;
   min-height: 28px;
   padding: 1px 0;
-  border: 1px solid transparent;
+  /* рамка 2px есть всегда (прозрачная) — у дня с задачами она лишь окрашивается, клетка не прыгает */
+  border: 2px solid transparent;
   border-radius: 6px;
   background: transparent;
+  /* цифры бледнее основного текста; --muted к фону карточки — не ниже 4.5:1 в обеих темах */
+  color: var(--muted);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   line-height: 1.1;
@@ -1073,19 +1085,19 @@ button.chip {
 .yday:hover {
   background: var(--surface-2);
 }
-.yday.date-weekend {
+/* день с задачами — сильная обводка цветом текста; цифра остаётся бледной, выделение — рамкой */
+.yday.has-entries {
   border-color: var(--text);
-  padding: 1px 0;
-  line-height: 1.1;
 }
+/* сегодня — залитый кружок акцента с контрастной цифрой (не путать с обводкой дня с задачами) */
 .yday.is-today {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-text);
   font-weight: 700;
 }
-.yday.is-today.date-weekend {
-  box-shadow: 0 0 0 1px var(--text);
+.yday.is-today.has-entries {
+  border-color: var(--text);
 }
 .yday-dots {
   display: flex;
@@ -1965,6 +1977,19 @@ th {
 .settings-block h2 {
   font-size: 16px;
   margin: 0;
+}
+.year-summary-prefs {
+  margin: 4px 0 0;
+  padding: 8px 12px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.year-summary-prefs > legend {
+  font-weight: 600;
+  padding: 0 4px;
 }
 .settings-block h3 {
   font-size: 14px;
